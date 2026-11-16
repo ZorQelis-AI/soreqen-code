@@ -1,0 +1,760 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Motion</title>
+<!--
+  MOTION KIT — a film as data.
+
+  Edit only the VIDEO object below: the theme, then the scenes. The engine
+  under it draws every frame as a pure function of time, so a frame looks
+  the same however it is reached (play, scrub, export) and the QA and export
+  scripts can seek to any moment.
+
+  Player: autoplays and loops. Space pauses, R restarts, ← → step a frame.
+  ?debug=1 adds a scrub bar and scene names · ?t=12.5 opens at a time ·
+  ?clean=1 holds still (for capture).
+-->
+</head>
+<body>
+<div id="viewport"><div id="stage"></div></div>
+<script>
+/* ============================================================================
+ * THE FILM. Replace everything in VIDEO from STYLE.md and RUNDOWN.md.
+ * Sizes are pixels on the stage: 1920x1080 (16:9), 1080x1920 (9:16) or
+ * 1080x1080 (1:1). x and y are offsets from the stage's centre.
+ * ==========================================================================*/
+const VIDEO = {
+  size: "16:9",
+  fps: 30,
+  audio: null, // "voiceover.mp3" or "music.mp3": it leads the clock when set
+  theme: {
+    bg: "#0E1116",
+    ink: "#F5F2EA",
+    muted: "#A3A8B4",
+    accent: "#FFB547",
+    accent2: "#6C8CFF",
+    display: "'Space Grotesk', sans-serif",
+    text: "'Inter Tight', sans-serif",
+    mono: "'JetBrains Mono', monospace",
+    fonts: ["https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter+Tight:wght@400;500;600&family=JetBrains+Mono:wght@400;600&display=block"],
+    grain: 0.05,
+    radius: 26,
+  },
+  scenes: [
+    {
+      name: "hook",
+      dur: 3.4,
+      bg: { type: "mesh", colors: ["#0E1116", "#1C2440", "#FFB547"] },
+      camera: { from: { zoom: 1.08 }, to: { zoom: 1 } },
+      layers: [
+        { type: "title", text: "Every release, *on time*", size: 150, reveal: "rise", at: 0.25 },
+        { type: "label", text: "Placeholder film: replace from STYLE.md", y: 250, at: 1.2 },
+      ],
+      out: { type: "zoom", dur: 0.7 },
+    },
+    {
+      name: "proof",
+      dur: 3.6,
+      bg: { type: "gradient", colors: ["#121726", "#0E1116"], angle: 160 },
+      camera: { from: { x: -40, zoom: 1 }, to: { x: 40, zoom: 1.05 } },
+      layers: [
+        { type: "counter", from: 0, to: 98.6, decimals: 1, suffix: "%", size: 220, at: 0.2, dur: 1.6, y: -40 },
+        { type: "title", text: "of builds ship green", size: 64, weight: 500, color: "muted", reveal: "mask", at: 0.9, y: 110 },
+        { type: "shape", shape: "ring", size: 760, stroke: 5, color: "accent", at: 0.1, dur: 1.8, depth: -0.3, opacity: 0.8 },
+      ],
+      out: { type: "push", dir: "left", dur: 0.6 },
+    },
+    {
+      name: "product",
+      dur: 4.2,
+      bg: { type: "grid", color: "#2A3352" },
+      camera: { from: { zoom: 0.94, rot: -1.5 }, to: { zoom: 1.04, rot: 0 } },
+      layers: [
+        { type: "device", device: "browser", image: null, w: 960, x: 360, at: 0.2, depth: 0.4 },
+        { type: "title", text: "One view of *everything*", size: 96, x: -790, align: "left", w: 560, reveal: "rise", at: 0.6 },
+      ],
+      out: { type: "wipe", dir: "up", dur: 0.6 },
+    },
+    {
+      name: "close",
+      dur: 3.4,
+      bg: { type: "mesh", colors: ["#FFB547", "#FF7A59", "#6C8CFF"] },
+      ink: "#14161C",
+      layers: [
+        { type: "logo", text: "Placeholder", size: 180, reveal: "shine", at: 0.3 },
+        { type: "label", text: "placeholder.dev", y: 150, at: 1.1, pill: false, color: "#14161C" },
+      ],
+    },
+  ],
+};
+</script>
+<script>
+/* ============================================================================
+ * MOTION KIT ENGINE. Do not edit below this line: everything above is the
+ * film. A component that does not exist yet goes in as { type: "html", html,
+ * draw(t, el, kit) } in a scene's layers, drawn as a function of t.
+ * ==========================================================================*/
+(() => {
+  "use strict";
+  const params = new URLSearchParams(location.search);
+  const SIZES = { "16:9": [1920, 1080], "9:16": [1080, 1920], "1:1": [1080, 1080], "4:5": [1080, 1350] };
+  const [W, H] = SIZES[VIDEO.size] ?? SIZES["16:9"];
+  const T = VIDEO.theme;
+  const FPS = VIDEO.fps || 30;
+
+  // ---- time -----------------------------------------------------------------
+  const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+  const lerp = (a, b, t) => a + (b - a) * t;
+  const EASE = {
+    linear: (t) => t,
+    in: (t) => t * t * t,
+    out: (t) => 1 - Math.pow(1 - t, 3),
+    inOut: (t) => (t < 0.5 ? 4 * t * t * t : 1 - Math.pow(-2 * t + 2, 3) / 2),
+    expo: (t) => (t >= 1 ? 1 : 1 - Math.pow(2, -10 * t)),
+    back: (t) => { const c = 1.70158; return 1 + (c + 1) * Math.pow(t - 1, 3) + c * Math.pow(t - 1, 2); },
+    spring: (t) => (t >= 1 ? 1 : 1 - Math.exp(-6.5 * t) * Math.cos(9.5 * t)),
+  };
+  const ease = (name) => (typeof name === "function" ? name : EASE[name] ?? EASE.out);
+  /** 0 → 1 over [a, a + d], eased. */
+  const prog = (t, a, d, e = "out") => ease(e)(clamp((t - a) / Math.max(1e-6, d)));
+  const hash = (n) => { const s = Math.sin(n * 127.1 + 311.7) * 43758.5453; return s - Math.floor(s); };
+  /** Smooth deterministic noise in [-1, 1]. */
+  const noise = (t, seed = 0) => { const i = Math.floor(t), f = t - i, u = f * f * (3 - 2 * f); return lerp(hash(i + seed * 57.31), hash(i + 1 + seed * 57.31), u) * 2 - 1; };
+  const color = (c, fallback) => (c == null ? fallback : (T[c] ?? c));
+
+  // ---- the clock: scene starts, marks, duration -----------------------------
+  let cursor = 0;
+  const scenes = VIDEO.scenes.map((s, i) => {
+    const scene = { ...s, index: i, start: cursor, dur: s.dur ?? 3, out: s.out ?? { type: "cut" } };
+    cursor += scene.dur;
+    return scene;
+  });
+  const DURATION = VIDEO.duration ?? cursor;
+  const MARKS = scenes.map((s) => ({ t: s.start, name: s.name ?? `scene ${s.index + 1}` }));
+
+  // ---- page and stage ---------------------------------------------------------
+  for (const href of T.fonts ?? []) {
+    const link = document.createElement("link");
+    link.rel = "stylesheet";
+    link.href = href;
+    document.head.appendChild(link);
+  }
+  const css = document.createElement("style");
+  css.textContent = `
+    html,body{margin:0;height:100%;background:#000;overflow:hidden}
+    #viewport{position:fixed;inset:0;display:grid;place-items:center;overflow:hidden}
+    /* No will-change anywhere: a promoted layer keeps a cached raster and sharpens a moment later, so a frame captured at once would differ from the same frame captured later. */
+    #stage{position:relative;width:${W}px;height:${H}px;overflow:hidden;background:${T.bg};transform-origin:center;contain:strict;
+      font-family:${T.text};color:${T.ink};-webkit-font-smoothing:antialiased;text-rendering:geometricPrecision}
+    .mk-scene,.mk-bg,.mk-world,.mk-fx{position:absolute;inset:0}
+    .mk-scene{overflow:hidden}
+    .mk-world{transform-origin:50% 50%}
+    .mk-layer{position:absolute;left:50%;top:50%}
+    .mk-title{font-family:${T.display};line-height:1.02;letter-spacing:-0.025em;white-space:normal}
+    .mk-title .w{display:inline-block;white-space:pre}
+    .mk-title .m{display:inline-block;overflow:hidden;vertical-align:top;padding:0.08em 0.02em 0.14em;margin:-0.08em -0.02em -0.14em}
+    .mk-title .i,.mk-title .c{display:inline-block}
+    .mk-em{color:${T.accent};position:relative}
+    .mk-mark{position:absolute;left:-0.08em;right:-0.08em;bottom:0.06em;height:0.32em;background:${T.accent};opacity:.35;transform-origin:left;z-index:-1;border-radius:0.08em}
+    .mk-label{font-family:${T.text};font-weight:500;letter-spacing:0.01em;white-space:nowrap}
+    .mk-pill{padding:0.42em 0.95em;border-radius:999px;border:1.5px solid color-mix(in srgb,currentColor 35%,transparent);background:color-mix(in srgb,currentColor 7%,transparent)}
+    .mk-counter{font-family:${T.display};font-weight:600;letter-spacing:-0.04em;font-variant-numeric:tabular-nums;white-space:nowrap;line-height:1}
+    .mk-card{box-sizing:border-box;border-radius:${T.radius ?? 24}px;background:color-mix(in srgb,${T.ink} 6%,transparent);border:1.5px solid color-mix(in srgb,${T.ink} 14%,transparent);padding:34px 36px;backdrop-filter:blur(2px)}
+    .mk-card h3{margin:14px 0 8px;font:600 40px/1.1 ${T.display};letter-spacing:-0.02em}
+    .mk-card p{margin:0;font:400 30px/1.35 ${T.text};color:${T.muted}}
+    .mk-card .ico{font-size:52px;line-height:1}
+    .mk-device{box-sizing:border-box;background:#0B0C10;box-shadow:0 60px 120px -30px rgba(0,0,0,.55),0 0 0 1.5px rgba(255,255,255,.08) inset}
+    .mk-device .scr{position:absolute;overflow:hidden;background:linear-gradient(135deg,${T.accent2},${T.accent})}
+    .mk-device .scr img{position:absolute;left:0;top:0;width:100%;display:block}
+    .mk-device .bar{position:absolute;left:0;right:0;top:0;height:46px;background:#16181F;display:flex;align-items:center;gap:10px;padding:0 18px;box-sizing:border-box}
+    .mk-device .bar i{width:13px;height:13px;border-radius:50%;background:#3A3F4C}
+    .mk-code{font:500 30px/1.55 ${T.mono ?? "monospace"};white-space:pre;border-radius:${T.radius ?? 24}px;background:#0B0D12;color:#E6E9F0;padding:36px 42px;box-shadow:0 40px 90px -30px rgba(0,0,0,.6);box-sizing:border-box}
+    .mk-code .k{color:#C792EA}.mk-code .s{color:#C3E88D}.mk-code .n{color:#F78C6C}.mk-code .cm{color:#69707F}.mk-code .f{color:#82AAFF}
+    .mk-caret{display:inline-block;width:0.55ch;height:1.05em;vertical-align:-0.15em;background:currentColor;margin-left:2px}
+    .mk-bar{position:absolute;bottom:0;border-radius:14px 14px 4px 4px}
+    .mk-bar-label{position:absolute;bottom:-58px;left:0;right:0;text-align:center;font:500 30px ${T.text};color:${T.muted}}
+    .mk-bar-value{position:absolute;top:-56px;left:0;right:0;text-align:center;font:600 36px ${T.display};font-variant-numeric:tabular-nums}
+    .mk-grain{position:absolute;inset:0;width:100%;height:100%;pointer-events:none;mix-blend-mode:overlay;z-index:50}
+    .mk-vignette{position:absolute;inset:0;pointer-events:none;z-index:49;background:radial-gradient(ellipse at center,transparent 55%,rgba(0,0,0,.38) 100%)}
+    .mk-flash{position:absolute;inset:0;pointer-events:none;z-index:60;background:${T.ink};opacity:0}
+    #mk-debug{position:fixed;left:16px;right:16px;bottom:14px;display:flex;gap:12px;align-items:center;font:500 13px system-ui;color:#ddd;z-index:9}
+    #mk-debug input{flex:1}
+  `;
+  document.head.appendChild(css);
+  const stage = document.getElementById("stage");
+  const el = (tag, cls, parent, html) => { const n = document.createElement(tag); if (cls) n.className = cls; if (html != null) n.innerHTML = html; if (parent) parent.appendChild(n); return n; };
+  const fit = () => { const s = Math.min(innerWidth / W, innerHeight / H); stage.style.transform = `scale(${s})`; };
+  addEventListener("resize", fit);
+  fit();
+
+  // ---- backgrounds ------------------------------------------------------------
+  const BACKGROUNDS = {
+    solid(spec, host) { host.style.background = color(spec.color, T.bg); return () => {}; },
+    gradient(spec, host) {
+      const cs = (spec.colors ?? [T.bg, T.accent2]).map((c) => color(c));
+      return (t) => {
+        const a = (spec.angle ?? 135) + noise(t * 0.15, 3) * 18;
+        host.style.background = `linear-gradient(${a}deg, ${cs.join(", ")})`;
+      };
+    },
+    mesh(spec, host) {
+      const cs = (spec.colors ?? [T.bg, T.accent2, T.accent]).map((c) => color(c));
+      host.style.background = cs[0];
+      const blobs = cs.slice(1).concat(cs.slice(1)).map((c, i) => {
+        const b = el("div", "", host);
+        const size = Math.max(W, H) * (0.9 - i * 0.12);
+        Object.assign(b.style, { position: "absolute", left: "50%", top: "50%", width: `${size}px`, height: `${size}px`, marginLeft: `${-size / 2}px`, marginTop: `${-size / 2}px`, borderRadius: "50%", background: `radial-gradient(circle, ${c} 0%, transparent 62%)`, opacity: i < cs.length - 1 ? 0.9 : 0.55 });
+        return b;
+      });
+      return (t) => blobs.forEach((b, i) => {
+        const x = noise(t * 0.12, i * 7 + 1) * W * 0.32 + (i % 2 ? 1 : -1) * W * 0.12;
+        const y = noise(t * 0.1, i * 7 + 4) * H * 0.3 + (i % 3 ? -1 : 1) * H * 0.08;
+        b.style.transform = `translate(${x}px, ${y}px) scale(${1 + noise(t * 0.2, i + 9) * 0.12})`;
+      });
+    },
+    grid(spec, host) {
+      host.style.background = color(spec.base, T.bg);
+      const g = el("div", "", host);
+      const c = color(spec.color, "rgba(255,255,255,.12)");
+      const s = spec.cell ?? 80;
+      Object.assign(g.style, { position: "absolute", inset: "-40%", backgroundImage: `linear-gradient(${c} 1.5px, transparent 1.5px), linear-gradient(90deg, ${c} 1.5px, transparent 1.5px)`, backgroundSize: `${s}px ${s}px`, transform: "perspective(1200px) rotateX(58deg)", maskImage: "radial-gradient(ellipse at 50% 40%, #000 20%, transparent 70%)", WebkitMaskImage: "radial-gradient(ellipse at 50% 40%, #000 20%, transparent 70%)" });
+      const glow = el("div", "", host);
+      Object.assign(glow.style, { position: "absolute", inset: 0, background: `radial-gradient(ellipse at 50% 30%, ${color(spec.glow, T.accent2)}33, transparent 60%)` });
+      return (t) => { g.style.backgroundPosition = `0 ${(t * (spec.speed ?? 40)) % s}px`; };
+    },
+    image(spec, host) {
+      const img = el("img", "", host);
+      img.src = spec.src;
+      Object.assign(img.style, { position: "absolute", inset: 0, width: "100%", height: "100%", objectFit: "cover" });
+      const veil = el("div", "", host);
+      Object.assign(veil.style, { position: "absolute", inset: 0, background: spec.overlay ?? "linear-gradient(180deg, rgba(0,0,0,.15), rgba(0,0,0,.55))" });
+      return (t) => { img.style.transform = `scale(${1.06 + t * 0.012}) translate(${noise(t * 0.1, 2) * 12}px, ${noise(t * 0.1, 5) * 8}px)`; };
+    },
+  };
+
+  // ---- grain: pre-drawn tiles, one per frame, painted synchronously ----------
+  /*
+   * Drawn on a canvas, never swapped in as a background image: an image URL
+   * decodes when the browser gets to it, and a capture taken at once caught
+   * the previous frame's grain.
+   */
+  const grainTiles = [];
+  if (T.grain) {
+    for (let k = 0; k < 6; k++) {
+      const c = document.createElement("canvas");
+      c.width = c.height = 256;
+      const g = c.getContext("2d");
+      const d = g.createImageData(256, 256);
+      for (let p = 0; p < d.data.length; p += 4) { const v = hash(p * 0.37 + k * 911) * 255; d.data[p] = d.data[p + 1] = d.data[p + 2] = v; d.data[p + 3] = 255; }
+      g.putImageData(d, 0, 0);
+      grainTiles.push(c);
+    }
+  }
+
+  // ---- layers -----------------------------------------------------------------
+  /** Words of a line, with *emphasis* marked. */
+  const words = (text) => {
+    const out = [];
+    let em = false;
+    for (const part of String(text).split(/(\*)/)) {
+      if (part === "*") { em = !em; continue; }
+      for (const w of part.split(/(\s+)/)) if (w) out.push({ w, em, space: /^\s+$/.test(w) });
+    }
+    return out;
+  };
+  /** Where the camera is this frame, for layers with depth: near layers (depth > 0) move more, far ones (< 0) less. */
+  const camNow = { x: 0, y: 0 };
+  const place = (node, L, extra = "") => {
+    const ax = L.align === "left" ? "0%" : L.align === "right" ? "-100%" : "-50%";
+    const d = L.depth ?? 0;
+    node.style.transform = `translate(${(L.x ?? 0) - camNow.x * d}px, ${(L.y ?? 0) - camNow.y * d}px) translate(${ax}, -50%) ${extra}`;
+  };
+  /** How a layer comes in and goes out: shared by every component. */
+  const presence = (L, lt, scene) => {
+    const at = L.at ?? 0;
+    const dur = L.dur ?? 0.9;
+    const outAt = L.out ?? Infinity;
+    const p = prog(lt, at, dur, L.ease ?? "expo");
+    const q = outAt === Infinity ? 0 : prog(lt, outAt, L.outDur ?? 0.45, "in");
+    return { p, q, on: lt >= at - 0.001 && q < 1 };
+  };
+
+  const COMPONENTS = {
+    title(L, host) {
+      const node = el("div", "mk-layer mk-title", host);
+      const size = L.size ?? 120;
+      Object.assign(node.style, { fontSize: `${size}px`, fontWeight: L.weight ?? 600, color: color(L.color, "inherit"), textAlign: L.align ?? "center", width: L.w ? `${L.w}px` : "auto", maxWidth: `${W * 0.86}px` });
+      const reveal = L.reveal ?? "rise";
+      const parts = [];
+      for (const { w, em, space } of words(L.text)) {
+        if (space) { node.appendChild(document.createTextNode(" ")); continue; }
+        const outer = el("span", `w${em ? " mk-em" : ""}`, node);
+        const mask = reveal === "mask" ? el("span", "m", outer) : outer;
+        if (reveal === "chars") {
+          const chars = [...w].map((ch) => el("span", "c", mask, ch.replace(/&/g, "&amp;").replace(/</g, "&lt;")));
+          parts.push({ outer, chars, em });
+        } else {
+          const inner = el("span", "i", mask);
+          inner.textContent = w;
+          parts.push({ outer, inner, em });
+        }
+        if (em && L.highlight === "marker") { const m = el("span", "mk-mark", outer); outer.style.position = "relative"; parts[parts.length - 1].mark = m; }
+      }
+      const caret = reveal === "type" ? el("span", "mk-caret", node) : null;
+      const total = parts.length;
+      const typed = String(L.text).replace(/\*/g, "");
+      return (lt, scene) => {
+        const { p, q, on } = presence(L, lt, scene);
+        node.style.visibility = on ? "visible" : "hidden";
+        if (!on) return;
+        place(node, L, `scale(${reveal === "scale" ? lerp(1.35, 1, p) : 1})`);
+        const at = L.at ?? 0;
+        const stagger = L.stagger ?? (reveal === "chars" ? 0.025 : 0.09);
+        if (reveal === "type") {
+          const n = Math.floor(prog(lt, at, L.dur ?? typed.length * 0.045, "linear") * typed.length);
+          let left = n;
+          for (const part of parts) { const len = part.inner.textContent.length; part.outer.style.visibility = left > 0 ? "visible" : "hidden"; part.inner.style.clipPath = left >= len ? "none" : `inset(0 ${100 - (left / len) * 100}% 0 0)`; left -= len + 1; }
+          caret.style.opacity = Math.floor(lt * 2.2) % 2 === 0 || n < typed.length ? 1 : 0;
+          node.style.opacity = 1 - q;
+          return;
+        }
+        parts.forEach((part, i) => {
+          const pi = prog(lt, at + i * stagger, L.dur ?? 0.9, L.ease ?? "expo");
+          const qi = q > 0 ? prog(lt, L.out + i * 0.04, L.outDur ?? 0.4, "in") : 0;
+          const apply = (n, k, j = 0) => {
+            const pj = j ? prog(lt, at + j * stagger, L.dur ?? 0.8, "expo") : k;
+            if (reveal === "mask") n.style.transform = `translateY(${(1 - pj) * 105 - qi * 105}%)`;
+            else if (reveal === "fade") n.style.opacity = pj * (1 - qi);
+            else if (reveal === "scale") n.style.opacity = pj * (1 - qi);
+            else {
+              const rise = reveal === "chars" ? 0.5 : 0.42;
+              n.style.transform = `translateY(${(1 - pj) * rise - qi * 0.35}em) ${reveal === "chars" ? `rotateX(${(1 - pj) * -70}deg)` : ""}`;
+              n.style.opacity = Math.min(pj * 1.4, 1) * (1 - qi);
+              const blur = (1 - pj) * 10 + qi * 8;
+              n.style.filter = blur > 0.3 ? `blur(${blur}px)` : "none";
+            }
+          };
+          if (part.chars) part.chars.forEach((c, j) => apply(c, pi, i * 4 + j));
+          else apply(part.inner, pi);
+          if (part.mark) part.mark.style.transform = `scaleX(${prog(lt, at + total * stagger + 0.15, 0.6, "inOut")})`;
+        });
+      };
+    },
+    label(L, host) {
+      const node = el("div", `mk-layer mk-label${L.pill === false ? "" : " mk-pill"}`, host);
+      node.textContent = (L.icon ? `${L.icon}  ` : "") + L.text;
+      Object.assign(node.style, { fontSize: `${L.size ?? 34}px`, color: color(L.color, T.muted) });
+      return (lt) => {
+        const { p, q, on } = presence(L, lt);
+        node.style.visibility = on ? "visible" : "hidden";
+        if (!on) return;
+        place(node, L, `translateY(${(1 - p) * 24 - q * 16}px)`);
+        node.style.opacity = p * (1 - q);
+      };
+    },
+    counter(L, host) {
+      const node = el("div", "mk-layer mk-counter", host);
+      Object.assign(node.style, { fontSize: `${L.size ?? 200}px`, color: color(L.color, "inherit") });
+      const fmt = new Intl.NumberFormat(L.locale ?? "en-US", { minimumFractionDigits: L.decimals ?? 0, maximumFractionDigits: L.decimals ?? 0 });
+      return (lt) => {
+        const { p, q, on } = presence(L, lt);
+        node.style.visibility = on ? "visible" : "hidden";
+        if (!on) return;
+        const v = lerp(L.from ?? 0, L.to ?? 100, prog(lt, L.at ?? 0, L.dur ?? 1.6, "expo"));
+        node.textContent = `${L.prefix ?? ""}${fmt.format(v)}${L.suffix ?? ""}`;
+        place(node, L, `translateY(${(1 - p) * 30}px) scale(${lerp(0.94, 1, p)})`);
+        node.style.opacity = Math.min(1, p * 1.5) * (1 - q);
+      };
+    },
+    image(L, host) {
+      const node = el("div", "mk-layer", host);
+      const img = el("img", "", node);
+      img.src = L.src;
+      Object.assign(node.style, { width: `${L.w ?? 900}px`, height: L.h ? `${L.h}px` : "auto", borderRadius: `${L.radius ?? T.radius ?? 24}px`, overflow: "hidden", boxShadow: L.shadow === false ? "none" : "0 50px 110px -35px rgba(0,0,0,.55)" });
+      Object.assign(img.style, { width: "100%", height: L.h ? "100%" : "auto", objectFit: L.fit ?? "cover", display: "block" });
+      return (lt) => {
+        const { p, q, on } = presence(L, lt);
+        node.style.visibility = on ? "visible" : "hidden";
+        if (!on) return;
+        const float = L.float === false ? 0 : noise(lt * 0.35, 11) * 10;
+        place(node, L, `translateY(${(1 - p) * 70 + float - q * 40}px) scale(${lerp(0.92, 1, p)}) rotate(${(L.rotate ?? 0) + noise(lt * 0.2, 13) * 0.6}deg)`);
+        node.style.opacity = Math.min(1, p * 1.4) * (1 - q);
+      };
+    },
+    device(L, host) {
+      const kind = L.device ?? "browser";
+      const w = L.w ?? (kind === "phone" ? 420 : 1100);
+      const h = L.h ?? (kind === "phone" ? w * 2.05 : w * 0.64);
+      const node = el("div", "mk-layer mk-device", host);
+      Object.assign(node.style, { width: `${w}px`, height: `${h}px`, borderRadius: kind === "phone" ? `${w * 0.16}px` : `${T.radius ?? 24}px`, padding: kind === "phone" ? `${w * 0.035}px` : "0" });
+      const scr = el("div", "scr", node);
+      const inset = kind === "phone" ? w * 0.035 : 0;
+      Object.assign(scr.style, { left: `${inset}px`, right: `${inset}px`, bottom: `${inset}px`, top: kind === "browser" ? "46px" : `${inset}px`, borderRadius: kind === "phone" ? `${w * 0.13}px` : `0 0 ${T.radius ?? 24}px ${T.radius ?? 24}px` });
+      if (kind === "browser") el("div", "bar", node, "<i></i><i></i><i></i>");
+      const img = L.image ? el("img", "", scr) : null;
+      if (img) img.src = L.image;
+      return (lt) => {
+        const { p, q, on } = presence(L, lt);
+        node.style.visibility = on ? "visible" : "hidden";
+        if (!on) return;
+        const tilt = (1 - p) * 14;
+        place(node, L, `perspective(2400px) translateY(${(1 - p) * 120 - q * 60}px) rotateX(${tilt}deg) rotateY(${(L.turn ?? 0) * (1 - p)}deg) scale(${lerp(0.9, 1, p)})`);
+        node.style.opacity = Math.min(1, p * 1.6) * (1 - q);
+        if (img && L.scroll) img.style.transform = `translateY(${-prog(lt, (L.at ?? 0) + 0.8, L.scrollDur ?? 2.4, "inOut") * L.scroll}px)`;
+      };
+    },
+    cards(L, host) {
+      const items = L.items ?? [];
+      const layout = L.layout ?? "row";
+      const cw = L.cardW ?? (layout === "row" ? Math.min(520, (W * 0.84) / Math.max(1, items.length) - 30) : 560);
+      const nodes = items.map((it) => {
+        const n = el("div", "mk-layer mk-card", host, `${it.icon ? `<div class="ico">${it.icon}</div>` : ""}<h3></h3>${it.text ? "<p></p>" : ""}`);
+        n.querySelector("h3").textContent = it.title ?? "";
+        if (it.text) n.querySelector("p").textContent = it.text;
+        n.style.width = `${cw}px`;
+        return n;
+      });
+      return (lt) => {
+        nodes.forEach((n, i) => {
+          const at = (L.at ?? 0) + i * (L.stagger ?? 0.22);
+          const { p, q, on } = presence({ ...L, at }, lt);
+          n.style.visibility = on ? "visible" : "hidden";
+          if (!on) return;
+          let x = 0, y = 0, r = 0;
+          if (layout === "row") x = (i - (items.length - 1) / 2) * (cw + 34);
+          else if (layout === "stack") { y = (i - (items.length - 1) / 2) * 34; r = (i - (items.length - 1) / 2) * 4; x = (i - (items.length - 1) / 2) * 60; }
+          else if (layout === "grid") { const cols = L.cols ?? 2; x = ((i % cols) - (cols - 1) / 2) * (cw + 34); y = (Math.floor(i / cols) - (Math.ceil(items.length / cols) - 1) / 2) * 300; }
+          const focus = L.cycle ? (Math.floor((lt - (L.at ?? 0) - items.length * 0.22) / (L.cycle)) % items.length) : -1;
+          const lit = focus === i ? 1 : 0;
+          n.style.borderColor = lit ? T.accent : "";
+          place(n, { ...L, x: (L.x ?? 0) + x, y: (L.y ?? 0) + y }, `translateY(${(1 - p) * 80 - lit * 14}px) rotate(${r + (1 - p) * 6}deg) scale(${lerp(0.9, 1, p)})`);
+          n.style.opacity = Math.min(1, p * 1.5) * (1 - q);
+        });
+      };
+    },
+    chart(L, host) {
+      const data = L.data ?? [];
+      const node = el("div", "mk-layer", host);
+      const w = L.w ?? 1100, h = L.h ?? 520;
+      Object.assign(node.style, { width: `${w}px`, height: `${h}px` });
+      const max = Math.max(...data.map((d) => d.value), 1);
+      const bw = (w / Math.max(1, data.length)) * 0.62;
+      const bars = data.map((d, i) => {
+        const b = el("div", "mk-bar", node);
+        Object.assign(b.style, { left: `${(i + 0.5) * (w / data.length) - bw / 2}px`, width: `${bw}px`, background: d.color ? color(d.color) : i === data.length - 1 ? T.accent : `color-mix(in srgb, ${T.ink} 22%, transparent)` });
+        const v = el("div", "mk-bar-value", b);
+        const lab = el("div", "mk-bar-label", b);
+        lab.textContent = d.label ?? "";
+        return { b, v, d };
+      });
+      return (lt) => {
+        const { p, q, on } = presence(L, lt);
+        node.style.visibility = on ? "visible" : "hidden";
+        if (!on) return;
+        place(node, L);
+        node.style.opacity = 1 - q;
+        bars.forEach(({ b, v, d }, i) => {
+          const g = prog(lt, (L.at ?? 0) + i * 0.12, 1.1, "expo");
+          b.style.height = `${(d.value / max) * h * g}px`;
+          v.textContent = `${L.prefix ?? ""}${Math.round(d.value * g)}${L.suffix ?? ""}`;
+          v.style.opacity = g;
+        });
+      };
+    },
+    code(L, host) {
+      const node = el("div", "mk-layer mk-code", host);
+      const src = String(L.code ?? "");
+      const esc = (s) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+      const paint = (s) => esc(s)
+        .replace(/(\/\/[^\n]*)/g, '<span class="cm">$1</span>')
+        .replace(/("[^"\n]*"|'[^'\n]*'|`[^`\n]*`)/g, '<span class="s">$1</span>')
+        .replace(/\b(const|let|var|function|return|import|from|export|await|async|if|else|for|new|class|def|fn|pub|use)\b/g, '<span class="k">$1</span>')
+        .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="n">$1</span>');
+      node.style.fontSize = `${L.size ?? 30}px`;
+      if (L.w) node.style.width = `${L.w}px`;
+      return (lt) => {
+        const { p, q, on } = presence(L, lt);
+        node.style.visibility = on ? "visible" : "hidden";
+        if (!on) return;
+        const n = Math.floor(prog(lt, (L.at ?? 0) + 0.4, L.typeDur ?? src.length * 0.022, "linear") * src.length);
+        node.innerHTML = paint(src.slice(0, n)) + (n < src.length ? '<span class="mk-caret"></span>' : "");
+        place(node, L, `translateY(${(1 - p) * 60}px) scale(${lerp(0.94, 1, p)})`);
+        node.style.opacity = Math.min(1, p * 1.5) * (1 - q);
+      };
+    },
+    shape(L, host) {
+      const size = L.size ?? 400;
+      const node = el("div", "mk-layer", host);
+      const stroke = L.stroke ?? 4;
+      const c = color(L.color, T.accent);
+      let shape;
+      if (L.shape === "line") shape = `<line x1="${stroke}" y1="${size / 2}" x2="${size - stroke}" y2="${size / 2}" pathLength="1"/>`;
+      else if (L.shape === "rect") shape = `<rect x="${stroke}" y="${stroke}" width="${size - stroke * 2}" height="${size - stroke * 2}" rx="${T.radius ?? 24}" pathLength="1"/>`;
+      else shape = `<circle cx="${size / 2}" cy="${size / 2}" r="${size / 2 - stroke}" pathLength="1"/>`;
+      node.innerHTML = `<svg width="${size}" height="${size}" viewBox="0 0 ${size} ${size}" fill="none" stroke="${c}" stroke-width="${stroke}" stroke-linecap="round" style="overflow:visible;display:block">${shape}</svg>`;
+      const path = node.querySelector("svg > *");
+      path.setAttribute("stroke-dasharray", "1 1");
+      return (lt) => {
+        const { q, on } = presence(L, lt);
+        node.style.visibility = on ? "visible" : "hidden";
+        if (!on) return;
+        const d = prog(lt, L.at ?? 0, L.dur ?? 1.4, "inOut");
+        path.setAttribute("stroke-dashoffset", String(1 - d));
+        place(node, L, `rotate(${(L.spin ?? -90) + lt * (L.turn ?? 6)}deg)`);
+        node.style.opacity = (L.opacity ?? 1) * (1 - q);
+      };
+    },
+    logo(L, host) {
+      const node = el("div", "mk-layer mk-title", host);
+      Object.assign(node.style, { fontSize: `${L.size ?? 160}px`, fontWeight: L.weight ?? 700, color: color(L.color, "inherit"), whiteSpace: "nowrap", letterSpacing: "-0.035em" });
+      if (L.src) { const img = el("img", "", node); img.src = L.src; Object.assign(img.style, { height: `${L.size ?? 160}px`, display: "block" }); }
+      else node.textContent = L.text ?? "";
+      const shine = el("div", "", node);
+      Object.assign(shine.style, { position: "absolute", inset: "-10% -20%", background: "linear-gradient(105deg, transparent 40%, rgba(255,255,255,.75) 50%, transparent 60%)", mixBlendMode: "overlay", pointerEvents: "none" });
+      node.style.overflow = "hidden";
+      node.style.padding = "0.1em 0.15em";
+      return (lt) => {
+        const { p, q, on } = presence({ ...L, ease: L.reveal === "pop" ? "spring" : "expo" }, lt);
+        node.style.visibility = on ? "visible" : "hidden";
+        if (!on) return;
+        const s = L.reveal === "pop" ? lerp(0.6, 1, p) : lerp(1.08, 1, p);
+        place(node, L, `scale(${s})`);
+        node.style.opacity = Math.min(1, p * 1.6) * (1 - q);
+        node.style.filter = p < 0.98 ? `blur(${(1 - p) * 14}px)` : "none";
+        const sweep = prog(lt, (L.at ?? 0) + 0.5, 0.9, "inOut");
+        shine.style.transform = `translateX(${lerp(-120, 120, sweep)}%)`;
+        shine.style.opacity = L.reveal === "shine" || L.reveal == null ? (sweep > 0 && sweep < 1 ? 1 : 0) : 0;
+      };
+    },
+    particles(L, host) {
+      const canvas = el("canvas", "mk-layer", host);
+      canvas.width = W; canvas.height = H;
+      Object.assign(canvas.style, { left: 0, top: 0, transform: "none" });
+      const g = canvas.getContext("2d");
+      const n = L.count ?? 90;
+      const c = color(L.color, T.ink);
+      return (lt) => {
+        g.clearRect(0, 0, W, H);
+        g.fillStyle = c;
+        for (let i = 0; i < n; i++) {
+          const x = (hash(i * 3.1) * W + lt * (L.speed ?? 18) * (0.4 + hash(i * 1.7))) % W;
+          const y = (hash(i * 7.7) * H + noise(lt * 0.3, i) * 40 + H) % H;
+          const r = 1 + hash(i * 5.3) * (L.size ?? 3);
+          g.globalAlpha = (L.opacity ?? 0.5) * (0.3 + 0.7 * hash(i * 9.1));
+          g.beginPath(); g.arc(x, y, r, 0, Math.PI * 2); g.fill();
+        }
+      };
+    },
+    html(L, host) {
+      const node = el("div", "mk-layer", host, L.html ?? "");
+      return (lt) => {
+        const { p, q, on } = presence(L, lt);
+        node.style.visibility = on ? "visible" : "hidden";
+        if (!on) return;
+        place(node, L);
+        node.style.opacity = Math.min(1, p * 1.5) * (1 - q);
+        L.draw?.(lt, node, KIT, p, q);
+      };
+    },
+  };
+
+  // ---- build ------------------------------------------------------------------
+  const built = scenes.map((scene) => {
+    const root = el("div", "mk-scene", stage);
+    if (scene.ink) root.style.color = scene.ink;
+    const bgHost = el("div", "mk-bg", root);
+    const bgSpec = scene.bg ?? { type: "solid" };
+    const drawBg = (BACKGROUNDS[bgSpec.type] ?? BACKGROUNDS.solid)(bgSpec, bgHost);
+    const world = el("div", "mk-world", root);
+    const layers = (scene.layers ?? []).map((L) => {
+      const make = COMPONENTS[L.type];
+      if (!make) throw new Error(`Unknown layer type "${L.type}" in scene "${scene.name}"`);
+      const draw = make(L, world);
+      return { L, draw };
+    });
+    return { scene, root, world, drawBg, layers };
+  });
+  const fx = el("div", "mk-fx", stage);
+  fx.style.pointerEvents = "none";
+  fx.style.zIndex = 40;
+  if (VIDEO.vignette !== false) el("div", "mk-vignette", fx);
+  const flash = el("div", "mk-flash", fx);
+  const grain = T.grain ? el("canvas", "mk-grain", fx) : null;
+  const grainPaint = grain ? grain.getContext("2d") : null;
+  const grainPatterns = grainPaint ? grainTiles.map((c) => grainPaint.createPattern(c, "repeat")) : [];
+  if (grain) { grain.width = W; grain.height = H; grain.style.opacity = T.grain; }
+
+  // ---- transitions --------------------------------------------------------------
+  /** How scene `b` (incoming) and `a` (outgoing) look `k` (0 → 1) through their transition. */
+  const TRANSITIONS = {
+    cut: () => {},
+    fade: (a, b, k) => { a.root.style.opacity = 1 - k; b.root.style.opacity = k; },
+    push: (a, b, k, spec) => {
+      const e = EASE.inOut(k);
+      const [dx, dy] = { left: [-1, 0], right: [1, 0], up: [0, -1], down: [0, 1] }[spec.dir ?? "left"];
+      a.root.style.transform = `translate(${dx * e * W}px, ${dy * e * H}px)`;
+      b.root.style.transform = `translate(${dx * (e - 1) * W}px, ${dy * (e - 1) * H}px)`;
+      const blur = Math.sin(k * Math.PI) * 18;
+      a.root.style.filter = b.root.style.filter = blur > 0.5 ? `blur(${blur}px)` : "none";
+    },
+    whip: (a, b, k, spec) => TRANSITIONS.push(a, b, EASE.expo(k), spec),
+    zoom: (a, b, k) => {
+      const e = EASE.inOut(k);
+      a.root.style.transform = `scale(${lerp(1, 2.4, EASE.in(k))})`;
+      a.root.style.opacity = 1 - e;
+      b.root.style.transform = `scale(${lerp(0.7, 1, EASE.out(k))})`;
+      b.root.style.opacity = e;
+      const blur = Math.sin(k * Math.PI) * 14;
+      a.root.style.filter = b.root.style.filter = blur > 0.5 ? `blur(${blur}px)` : "none";
+    },
+    wipe: (a, b, k, spec) => {
+      const e = EASE.inOut(k) * 100;
+      const inset = { up: `${100 - e}% 0 0 0`, down: `0 0 ${100 - e}% 0`, left: `0 0 0 ${100 - e}%`, right: `0 ${100 - e}% 0 0` }[spec.dir ?? "up"];
+      b.root.style.clipPath = `inset(${inset})`;
+      a.root.style.transform = `scale(${lerp(1, 0.94, EASE.inOut(k))})`;
+    },
+    iris: (a, b, k) => { b.root.style.clipPath = `circle(${EASE.inOut(k) * 75}% at 50% 50%)`; },
+    flash: (a, b, k) => { a.root.style.opacity = k < 0.5 ? 1 : 0; b.root.style.opacity = k < 0.5 ? 0 : 1; flash.style.opacity = Math.max(flash.style.opacity * 1 || 0, Math.sin(k * Math.PI) * 0.85); },
+  };
+
+  // ---- one frame ------------------------------------------------------------------
+  let current = 0;
+  function render(t) {
+    t = clamp(t, 0, DURATION - 1e-6);
+    current = t;
+    flash.style.opacity = 0;
+    /*
+     * A scene not on screen is taken out of the page, not made invisible: a
+     * layer that set itself visible would show through a hidden parent, and
+     * a seek back to an earlier scene drew every later scene's layers on top
+     * of it (caught by the QA's seek-twice check).
+     */
+    for (const s of built) {
+      const r = s.root.style;
+      r.display = "none"; r.opacity = 1; r.transform = "none"; r.filter = "none"; r.clipPath = "none"; r.zIndex = s.scene.index;
+    }
+    built.forEach((s, i) => {
+      const { scene } = s;
+      const half = (scene.out.type === "cut" ? 0 : scene.out.dur ?? 0.6) / 2;
+      const prevOut = i > 0 ? built[i - 1].scene.out : { type: "cut" };
+      const lead = (prevOut.type === "cut" ? 0 : prevOut.dur ?? 0.6) / 2;
+      const end = scene.start + scene.dur;
+      if (t < scene.start - lead || t >= end + half) return;
+      s.root.style.display = "";
+      const lt = t - scene.start;
+      s.drawBg(lt);
+      const cam = scene.camera ?? {};
+      const k = prog(lt, 0, scene.dur, cam.ease ?? "inOut");
+      const from = { x: 0, y: 0, zoom: 1, rot: 0, ...(cam.from ?? {}) };
+      const to = { x: 0, y: 0, zoom: cam.from ? from.zoom : 1.035, rot: 0, ...(cam.to ?? {}) };
+      const shake = cam.shake ?? 0.25;
+      const cx = lerp(from.x, to.x, k) + noise(lt * 0.6, scene.index * 3 + 1) * 6 * shake;
+      const cy = lerp(from.y, to.y, k) + noise(lt * 0.6, scene.index * 3 + 2) * 6 * shake;
+      s.world.style.transform = `scale(${lerp(from.zoom, to.zoom, k)}) rotate(${lerp(from.rot, to.rot, k)}deg) translate(${-cx}px, ${-cy}px)`;
+      camNow.x = cx;
+      camNow.y = cy;
+      for (const { draw } of s.layers) draw(lt, scene);
+    });
+    // Transitions: each boundary blends the two scenes around it.
+    built.forEach((a, i) => {
+      const b = built[i + 1];
+      if (!b) return;
+      const spec = a.scene.out;
+      if (spec.type === "cut") return;
+      const d = spec.dur ?? 0.6;
+      const boundary = b.scene.start;
+      if (t < boundary - d / 2 || t >= boundary + d / 2) return;
+      b.root.style.zIndex = 100;
+      (TRANSITIONS[spec.type] ?? TRANSITIONS.fade)(a, b, (t - (boundary - d / 2)) / d, spec);
+    });
+    if (grainPaint) {
+      const f = Math.floor(t * 24);
+      const ox = Math.floor(hash(f) * 256), oy = Math.floor(hash(f + 7) * 256);
+      grainPaint.setTransform(1, 0, 0, 1, -ox, -oy);
+      grainPaint.fillStyle = grainPatterns[f % grainPatterns.length];
+      grainPaint.fillRect(ox, oy, W, H);
+    }
+    if (debugTime) debugTime.textContent = `${t.toFixed(2)}s · ${sceneAt(t)?.name ?? ""}`;
+    if (debugRange && document.activeElement !== debugRange) debugRange.value = String(t);
+  }
+  const sceneAt = (t) => scenes.find((s) => t >= s.start && t < s.start + s.dur);
+
+  // ---- ready: fonts and images ----------------------------------------------------
+  const images = [...stage.querySelectorAll("img")];
+  const ready = Promise.all([
+    document.fonts.ready,
+    ...images.map((img) => (img.complete ? Promise.resolve() : new Promise((r) => { img.onload = img.onerror = r; }))),
+    // Every weight the components use, with real letters: a font is split into subsets, and an empty load fetches none.
+    ...[T.display, T.text, T.mono].filter(Boolean).flatMap((f) => [400, 500, 600, 700].map((w) => document.fonts.load(`${w} 64px ${f}`, "Aa0").catch(() => null))),
+  ]).then(() => undefined);
+
+  // ---- the player -------------------------------------------------------------------
+  let debugRange = null, debugTime = null;
+  if (params.get("debug") === "1") {
+    const bar = el("div", "", document.body);
+    bar.id = "mk-debug";
+    debugRange = el("input", "", bar);
+    Object.assign(debugRange, { type: "range", min: 0, max: DURATION, step: 1 / FPS, value: 0 });
+    debugTime = el("span", "", bar);
+    debugRange.addEventListener("input", () => { playing = false; render(Number(debugRange.value)); });
+  }
+  const audio = VIDEO.audio ? new Audio(VIDEO.audio) : null;
+  let playing = params.get("clean") !== "1" && !navigator.webdriver;
+  let origin = performance.now() / 1000 - Number(params.get("t") ?? 0);
+  const tick = () => {
+    if (playing) {
+      let t = audio && !audio.paused ? audio.currentTime : performance.now() / 1000 - origin;
+      if (t >= DURATION) { origin = performance.now() / 1000; t = 0; if (audio) audio.currentTime = 0; }
+      render(t);
+    }
+    requestAnimationFrame(tick);
+  };
+  addEventListener("keydown", (e) => {
+    if (e.code === "Space") { playing = !playing; origin = performance.now() / 1000 - current; if (audio) playing ? audio.play().catch(() => {}) : audio.pause(); e.preventDefault(); }
+    if (e.key === "r" || e.key === "R") { origin = performance.now() / 1000; if (audio) audio.currentTime = 0; render(0); }
+    if (e.key === "ArrowRight" || e.key === "ArrowLeft") { playing = false; render(current + (e.key === "ArrowRight" ? 1 : -1) / FPS); }
+  });
+  addEventListener("pointerdown", () => { if (audio && playing && audio.paused) { audio.currentTime = current; audio.play().catch(() => {}); } }, { once: true });
+
+  const KIT = { W, H, EASE, ease, prog, noise, hash, lerp, clamp, color, theme: T };
+  window.MOTION = {
+    duration: DURATION,
+    fps: FPS,
+    width: W,
+    height: H,
+    marks: MARKS,
+    /** Where scenes blend, for the QA script: what moves through a transition is not a layout problem. */
+    transitions: scenes.slice(0, -1).filter((s) => s.out.type !== "cut").map((s) => ({ t: s.start + s.dur, dur: s.out.dur ?? 0.6, type: s.out.type })),
+    audio: VIDEO.audio,
+    fonts: [T.display, T.text, T.mono].filter(Boolean),
+    ready,
+    /** Draw the frame at `t` seconds; resolves when it can be captured. */
+    // Two frames: the first commits the new styles, the second is the one a screenshot sees.
+    seek: (t) => ready.then(() => { playing = false; render(t); return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(() => r(current)))); }),
+    /** Every visible text box at this moment, in stage pixels, for the QA script. */
+    inspect: () => {
+      const s = stage.getBoundingClientRect();
+      const k = s.width / W;
+      const out = [];
+      for (const node of stage.querySelectorAll(".mk-title, .mk-label, .mk-counter, .mk-card h3, .mk-card p, .mk-code")) {
+        const scene = node.closest(".mk-scene");
+        if (!scene || scene.style.display === "none" || getComputedStyle(node).visibility === "hidden") continue;
+        const r = node.getBoundingClientRect();
+        if (r.width < 1 || r.height < 1) continue;
+        const style = getComputedStyle(node);
+        out.push({ text: node.textContent.trim().slice(0, 80), x: (r.left - s.left) / k, y: (r.top - s.top) / k, w: r.width / k, h: r.height / k, size: parseFloat(style.fontSize) * (r.width / k / Math.max(1, node.offsetWidth)), opacity: Number(style.opacity), font: style.fontFamily, color: style.color });
+      }
+      return { t: current, scene: sceneAt(current)?.name ?? null, texts: out };
+    },
+  };
+  ready.then(() => {
+    render(Number(params.get("t") ?? 0));
+    document.documentElement.dataset.ready = "1";
+    if (playing) requestAnimationFrame(tick);
+  });
+})();
+</script>
+</body>
+</html>

@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/ZorQelis-AI/soreqen-code/blob/main/SECURITY.md
+    about: Please report security problems privately, by email, not as an issue.
+  - name: SoreQen plans, credits and billing
+    url: https://soreqen.com/pricing
+    about: Questions about your account go to support@soreqen.com.

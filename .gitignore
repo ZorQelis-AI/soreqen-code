@@ -1,0 +1,9 @@
+node_modules/
+dist/
+npm/
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.soreqen/
+coverage/

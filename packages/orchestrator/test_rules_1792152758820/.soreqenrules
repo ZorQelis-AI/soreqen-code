@@ -1,0 +1,3 @@
+# Project Rules
+1. Always write unit tests
+2. Never commit console logs
