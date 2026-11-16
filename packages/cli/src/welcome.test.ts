@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { COMMANDS, matchCommands, resultSummary, toolParts, visible, welcomeLines } from "./welcome.js";
+import { glyph } from "./theme.js";
 
 const state = {
   version: "0.2.0",
@@ -28,8 +29,12 @@ describe("the welcome screen", () => {
     expect(text.match(/fix the failing auth test/g)).toHaveLength(1);
   });
 
-  it("draws the wordmark only where it fits", () => {
-    expect(welcomeLines(state, 120).some((l) => l.includes("███"))).toBe(true);
+  it("draws the wordmark only where it fits, and where the terminal can draw it", () => {
+    const wide = welcomeLines(state, 120);
+    // A Windows console that cannot draw block glyphs (no Windows Terminal, VS Code or xterm, as on a
+    // CI runner) gets the name in plain letters instead: see `unicode` in theme.ts.
+    expect(wide.some((l) => l.includes("███"))).toBe(glyph.rule === "─");
+    if (glyph.rule !== "─") expect(wide.some((l) => l.replace(/\x1b\[[0-9;]*m/g, "").includes("SoreQen Code"))).toBe(true);
     expect(welcomeLines(state, 50).some((l) => l.includes("███"))).toBe(false);
   });
 });
