@@ -195,7 +195,9 @@ export async function searchWorkspace(
       // Each `-e` is one pattern, and a line matching any is a match.
       const patterns = as === "both" ? [escapeRe(options.pattern), options.pattern] : [options.pattern];
       for (const p of patterns) argv.push("-e", p);
-      argv.push("--", options.path ?? ".");
+      // `src\app.ts` means a folder on every system; ripgrep on Linux and macOS would look for one file named that.
+      const scope = process.platform === "win32" ? options.path : options.path?.replace(/\\/g, "/");
+      argv.push("--", scope ?? ".");
       return runner.execCommand(workspaceId, { argv, timeoutMs: 20_000, signal: options.signal });
     };
 

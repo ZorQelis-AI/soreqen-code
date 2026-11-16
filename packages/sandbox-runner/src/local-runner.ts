@@ -93,15 +93,33 @@ const within = (root: string, p: string): boolean => {
 const isFullPath = (raw: string): boolean =>
   process.platform === "win32" ? /^[A-Za-z]:[\\/]/.test(raw) || /^\\\\[^\\]/.test(raw) : raw.startsWith("/");
 
-/** The root as written and as it really is: on macOS a temp folder under /var is /private/var. */
+/**
+ * The root as written and as it really is: on macOS a temp folder under /var
+ * is /private/var, and on Windows `C:\Users\RUNNER~1` (a short name) is
+ * `C:\Users\runneradmin`, which only the native realpath expands.
+ */
 function rootForms(root: string): string[] {
   const resolved = path.resolve(root);
-  try {
-    const real = fs.realpathSync(resolved);
-    return real === resolved ? [resolved] : [resolved, real];
-  } catch {
-    return [resolved];
+  const forms = new Set([resolved]);
+  for (const real of [fs.realpathSync, fs.realpathSync.native]) {
+    try {
+      forms.add(real(resolved));
+    } catch {
+      // Not there yet: as written is all there is.
+    }
   }
+  return [...forms];
+}
+
+/**
+ * On Linux and macOS `\` is a letter in a file name, but a model that writes
+ * `src\app.ts` means a folder (it was trained on Windows paths as well): read
+ * it that way unless a name with the backslash really exists. Windows reads
+ * both separators already.
+ */
+function posixSeparators(root: string, raw: string): string {
+  if (process.platform === "win32" || !raw.includes("\\")) return raw;
+  return fs.existsSync(path.resolve(root, raw)) ? raw : raw.replace(/\\/g, "/");
 }
 
 /**
@@ -119,7 +137,7 @@ function rootForms(root: string): string[] {
  * the project was read and written under the project a second time.
  */
 function projectPath(ws: LocalWorkspaceRecord, target: string): string {
-  const raw = target.trim();
+  const raw = posixSeparators(ws.path, target.trim());
   if (isFullPath(raw)) {
     const full = path.resolve(raw);
     for (const root of rootForms(ws.path)) {

@@ -40,22 +40,41 @@ const PAGE = `
   </script>
 </body></html>`;
 
-let chromium: typeof import("playwright").chromium | null = null;
-try {
-  ({ chromium } = await import("playwright"));
-} catch {
-  chromium = null;
+/**
+ * A Chromium that starts here, found the way the browser tools find one:
+ * Playwright's own, else the system's Chrome or Edge. CI runners have Chrome
+ * but no Playwright download, and these tests failed there with "Executable
+ * doesn't exist" instead of using it (16 Nov 2026). Skipped only where no
+ * Chromium at all can start.
+ */
+async function startableChromium(): Promise<(() => Promise<Browser>) | null> {
+  let pw: typeof import("playwright");
+  try {
+    pw = await import("playwright");
+  } catch {
+    return null;
+  }
+  for (const channel of [undefined, "chrome", "msedge"]) {
+    const start = () => pw.chromium.launch({ headless: true, ...(channel ? { channel } : {}) });
+    try {
+      await (await start()).close();
+      return start;
+    } catch {
+      // Not this one.
+    }
+  }
+  return null;
 }
 
-const canRun = chromium !== null;
-const maybe = canRun ? describe : describe.skip;
+const launch = await startableChromium();
+const maybe = launch ? describe : describe.skip;
 
 maybe("driving a real page", () => {
   let browser: Browser;
   let page: Page;
 
   beforeAll(async () => {
-    browser = await chromium!.launch({ headless: true });
+    browser = await launch!();
     page = await browser.newPage();
     await page.goto(`data:text/html,${encodeURIComponent(PAGE)}`);
   }, 120_000);
