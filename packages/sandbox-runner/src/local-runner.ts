@@ -89,6 +89,47 @@ const within = (root: string, p: string): boolean => {
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
 };
 
+/** A path from a drive or a share on Windows; from `/` anywhere else. */
+const isFullPath = (raw: string): boolean =>
+  process.platform === "win32" ? /^[A-Za-z]:[\\/]/.test(raw) || /^\\\\[^\\]/.test(raw) : raw.startsWith("/");
+
+/** The root as written and as it really is: on macOS a temp folder under /var is /private/var. */
+function rootForms(root: string): string[] {
+  const resolved = path.resolve(root);
+  try {
+    const real = fs.realpathSync(resolved);
+    return real === resolved ? [resolved] : [resolved, real];
+  } catch {
+    return [resolved];
+  }
+}
+
+/**
+ * `target` as a path inside the project, for `guardPath`.
+ *
+ * A full path that is already inside the project names that file, whichever
+ * form of the project's path it was written in. A path written from the
+ * root, `/src/app.ts` (or `\src\app.ts`), means the project's own `src`:
+ * models write it that way, and `elsewhereOnDisk` has already claimed the
+ * ones that name a real place outside the project. Anything else is relative
+ * already.
+ *
+ * Before this, both cases went to `guardPath` as they were, and it stripped
+ * the slash from every one of them, so on Linux and macOS a full path inside
+ * the project was read and written under the project a second time.
+ */
+function projectPath(ws: LocalWorkspaceRecord, target: string): string {
+  const raw = target.trim();
+  if (isFullPath(raw)) {
+    const full = path.resolve(raw);
+    for (const root of rootForms(ws.path)) {
+      if (within(root, full)) return path.relative(root, full) || ".";
+    }
+  }
+  if (/^[\\/](?![\\/])/.test(raw)) return raw.replace(/^[\\/]+/, "");
+  return raw;
+}
+
 /**
  * `target` as a place on disk outside both the workspace and its data folder,
  * or null when it is one of theirs (or not a full path at all).
@@ -109,7 +150,8 @@ function elsewhereOnDisk(ws: LocalWorkspaceRecord, target: string): string | nul
     if (fs.existsSync(raw) || fs.existsSync(path.dirname(raw))) full = path.resolve(raw);
   }
   if (!full) return null;
-  if (within(ws.path, full) || (ws.dataPath && within(ws.dataPath, full))) return null;
+  const inside = (root: string): boolean => rootForms(root).some((r) => within(r, full!));
+  if (inside(ws.path) || (ws.dataPath && inside(ws.dataPath))) return null;
   return full;
 }
 
@@ -313,8 +355,10 @@ export class LocalSandboxRunner implements SandboxRunner {
     if (data) {
       const raw = target.trim();
       if (path.isAbsolute(raw)) {
-        const rel = path.relative(data, path.resolve(raw));
-        if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return guardPath(data, rel);
+        for (const root of rootForms(data)) {
+          const rel = path.relative(root, path.resolve(raw));
+          if (rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel))) return guardPath(data, rel);
+        }
       }
       const slashed = raw.replace(/\\/g, "/").replace(/^\.\//, "");
       const m = /^\.soreqen(?:\/+(.*))?$/.exec(slashed);
@@ -324,7 +368,7 @@ export class LocalSandboxRunner implements SandboxRunner {
         if (!owned) return guardPath(data, rest);
       }
     }
-    return guardPath(ws.path, target);
+    return guardPath(ws.path, projectPath(ws, target));
   }
 
   /** Whether a file tool's path lands outside the project and its data folder. */

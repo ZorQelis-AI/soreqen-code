@@ -53,13 +53,20 @@ export function clearPathCache(): void {
 export function guardPath(workspaceRoot: string, targetPath: string): string {
   const normalizedRoot = path.resolve(workspaceRoot);
 
-  // Clean leading slashes or Windows drive specifiers if relative path was meant
-  let sanitizedTarget = targetPath.trim();
-  if (sanitizedTarget.startsWith("/") || sanitizedTarget.startsWith("\\")) {
-    sanitizedTarget = sanitizedTarget.slice(1);
-  }
-
-  const resolvedTarget = path.resolve(normalizedRoot, sanitizedTarget);
+  /*
+   * A full path is taken as written: inside the root it is allowed, anywhere
+   * else refused.
+   *
+   * This used to strip a leading "/" or "\" first, so on Linux and macOS
+   * every absolute path became relative to the root. `/home/me/app/src/a.ts`
+   * in a workspace at /home/me/app resolved to
+   * `/home/me/app/home/me/app/src/a.ts`: a read missed the file and a write
+   * made folders inside the project (found by the first macOS and Linux CI
+   * run, 16 Nov 2026). A path written from the project root, `/src/app.ts`,
+   * which models do write, is the caller's to interpret: the local runner
+   * does, in `projectPath`.
+   */
+  const resolvedTarget = path.resolve(normalizedRoot, targetPath.trim());
 
   // Check if resolved path starts with workspaceRoot
   const relative = path.relative(normalizedRoot, resolvedTarget);

@@ -7,3 +7,5 @@ npm/
 !.env.example
 .soreqen/
 coverage/
+test_ws_*/
+test_rules_*/

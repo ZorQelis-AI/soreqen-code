@@ -606,9 +606,20 @@ export class ProcessManager {
   private async snapshot(entry: Entry): Promise<void> {
     if (entry.info.status !== "running" || entry.info.pid === undefined) return;
     const all = await listOsProcesses();
-    const found = descendantsOf(all, entry.info.pid);
-    const known = new Set(entry.tree.map((r) => r.pid));
-    const added = found.filter((r) => !known.has(r.pid));
+    /*
+     * The command's own id, as the program it became. `bash -c "node
+     * server.js"` replaces itself with node, so on Linux and macOS the id the
+     * reaper knows as `bash` is `node` a moment later, and "still the program
+     * it was" never matched: a host killed outright left the server running
+     * (found by the first Linux and macOS CI run, 16 Nov 2026). Windows'
+     * PowerShell never does this, which is why only POSIX missed it.
+     */
+    const self = all.find((p) => p.pid === entry.info.pid);
+    const became =
+      self && self.name.toLowerCase() !== entry.shell.toLowerCase() ? [{ pid: self.pid, name: self.name }] : [];
+    const found = [...became, ...descendantsOf(all, entry.info.pid)];
+    const known = new Set(entry.tree.map((r) => `${r.pid}:${r.name.toLowerCase()}`));
+    const added = found.filter((r) => !known.has(`${r.pid}:${r.name.toLowerCase()}`));
     if (added.length === 0) return;
     entry.tree = [...entry.tree, ...added].slice(-200);
     this.register();

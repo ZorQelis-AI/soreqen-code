@@ -68,7 +68,8 @@ describe("@sqcode/sandbox-runner", () => {
       await runner.destroyWorkspace(testWorkspaceId);
       const afterDestroy = await runner.inspectWorkspace(testWorkspaceId);
       expect(afterDestroy).toBeNull();
-    });
+      // A real shell and git, end to end: a fresh Windows CI runner's first PowerShell start alone passed 5 s.
+    }, 60_000);
   });
 
   describe("Security & Boundary Enforcement", () => {

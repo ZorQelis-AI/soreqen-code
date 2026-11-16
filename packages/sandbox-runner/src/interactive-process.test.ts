@@ -22,10 +22,12 @@ describe.skipIf(!loadPty())("interactive processes", () => {
     expect(info.interactive).toBe(true);
     expect(info.background).toBe(true); // a terminal never sends EOF
 
-    const deadline = Date.now() + 15_000;
+    // A cold PowerShell in a fresh Windows CI terminal took longer than 15 s to ask.
+    const deadline = Date.now() + 60_000;
     while (!pm.output("ws", info.id).includes("Project name") && Date.now() < deadline) {
       await new Promise((r) => setTimeout(r, 100));
     }
+    expect(pm.output("ws", info.id), "the prompt never appeared").toContain("Project name");
     expect(pm.write("ws", info.id, "moon-base\r")).toBe(true);
 
     const done = await pm.exited("ws", info.id)!;
@@ -34,7 +36,7 @@ describe.skipIf(!loadPty())("interactive processes", () => {
     expect(out).toContain("created moon-base");
     // Terminal codes are stripped before anyone reads the output.
     expect(out).not.toMatch(/\x1b/);
-  }, 30_000);
+  }, 90_000);
 
   it("refuses input to a process that has no terminal", () => {
     const pm = new ProcessManager();

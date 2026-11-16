@@ -9,7 +9,7 @@
  * (`.soreqen/skills`, `mcp.json`, `rules.md`) stays where they put it.
  */
 
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -87,7 +87,9 @@ describe("a workspace that keeps .soreqen outside the project", () => {
     await open();
     await runner.writeFile("ws", ".soreqen/scratch/s1/README.md", "x");
     const res = await runner.execCommand("ws", { argv: ["node", "-e", "console.log(process.cwd())"], cwd: ".soreqen/scratch/s1" });
-    expect(res.stdout.trim().toLowerCase()).toBe(join(data, "scratch", "s1").toLowerCase());
+    // Compared as real paths: on macOS the temp folder under /var is /private/var, which is what the child reports.
+    const real = (p: string) => realpathSync.native(p).toLowerCase();
+    expect(real(res.stdout.trim())).toBe(real(join(data, "scratch", "s1")));
   });
 
   it("starts npx from an argument list, which on Windows is a .cmd launcher", async () => {
@@ -124,6 +126,35 @@ describe("a workspace without a data folder", () => {
     await runner.writeFile("ws", ".soreqen/state/s1.json", "{}");
     expect(existsSync(join(project, ".soreqen", "state", "s1.json"))).toBe(true);
     expect(runner.dataPathOf("ws")).toBeNull();
+  });
+});
+
+describe("full paths into the project", () => {
+  it("reads and writes a full path inside the project as that file, not a copy nested under it", async () => {
+    await runner.createWorkspace("ws", { storagePath: project });
+    const file = join(project, "src", "a.ts");
+    mkdirSync(join(project, "src"), { recursive: true });
+    writeFileSync(file, "export const a = 1;\n");
+
+    expect((await runner.readFile("ws", file)).content).toContain("export const a");
+    await runner.writeFile("ws", join(project, "src", "b.ts"), "export const b = 2;\n");
+    expect(readFileSync(join(project, "src", "b.ts"), "utf8")).toContain("export const b");
+    // Before the fix, on Linux and macOS this landed at <project>/<project without its leading slash>/src/b.ts.
+    expect(existsSync(join(project, project.replace(/^[A-Za-z]:/, "").replace(/^[\\/]+/, "")))).toBe(false);
+  });
+
+  it("takes the project's real path too (macOS shows /var as /private/var)", async () => {
+    await runner.createWorkspace("ws", { storagePath: project });
+    await runner.writeFile("ws", join(realpathSync.native(project), "real.txt"), "x");
+    expect(readFileSync(join(project, "real.txt"), "utf8")).toBe("x");
+    expect(runner.isOutsideWorkspace("ws", join(realpathSync.native(project), "real.txt"))).toBe(false);
+  });
+
+  it("still reads a path written from the project root, /src/app.ts, as the project's own src", async () => {
+    await runner.createWorkspace("ws", { storagePath: project });
+    mkdirSync(join(project, "src"), { recursive: true });
+    await runner.writeFile("ws", "/src/app.ts", "export {};\n");
+    expect(existsSync(join(project, "src", "app.ts"))).toBe(true);
   });
 });
 

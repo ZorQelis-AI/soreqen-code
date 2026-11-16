@@ -45,6 +45,11 @@ describe("guardPath", () => {
     expect(() => guardPath(root, join(outside, "secret.txt"))).toThrow(PathTraversalError);
   });
 
+  it("takes an absolute path inside the workspace as that file", () => {
+    // On Linux and macOS the leading "/" used to be stripped, nesting the path under the root a second time.
+    expect(guardPath(root, join(root, "src", "index.ts"))).toBe(join(root, "src", "index.ts"));
+  });
+
   it("refuses a write through a symlinked directory that does not exist yet", () => {
     /*
      * The hole this test exists for.

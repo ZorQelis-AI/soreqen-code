@@ -19,7 +19,9 @@
  * than the whole runner failing to start.
  */
 
+import fs from "node:fs";
 import { createRequire } from "node:module";
+import path from "node:path";
 
 export interface Pty {
   pid: number;
@@ -45,11 +47,37 @@ let loaded: PtyModule | null | undefined;
 export function loadPty(): PtyModule | null {
   if (loaded !== undefined) return loaded;
   try {
-    loaded = createRequire(import.meta.url)("node-pty") as PtyModule;
+    const require = createRequire(import.meta.url);
+    if (process.platform !== "win32") makeSpawnHelperRunnable(require);
+    loaded = require("node-pty") as PtyModule;
   } catch {
     loaded = null;
   }
   return loaded;
+}
+
+/**
+ * node-pty starts every terminal through a small `spawn-helper` program, and
+ * the macOS prebuilds in node-pty 1.1.0 ship it without its execute bit: an
+ * install from npm loads the module fine and then fails every spawn with
+ * "posix_spawnp failed" (found by the first macOS CI run, 16 Nov 2026), so
+ * no interactive command could run on a Mac. Put the bit back where node-pty
+ * looks for it (`build/Release` first, then the prebuild for this system). An
+ * install this process may not change, such as a global npm owned by root,
+ * is left alone, and node-pty reports its own error there.
+ */
+function makeSpawnHelperRunnable(require: NodeJS.Require): void {
+  try {
+    const dir = path.dirname(require.resolve("node-pty/package.json"));
+    for (const sub of ["build/Release", "build/Debug", `prebuilds/${process.platform}-${process.arch}`]) {
+      const helper = path.join(dir, sub, "spawn-helper");
+      if (!fs.existsSync(helper)) continue;
+      const mode = fs.statSync(helper).mode;
+      if ((mode & 0o111) !== 0o111) fs.chmodSync(helper, mode | 0o755);
+    }
+  } catch {
+    // Not installed, or not ours to change: loading decides what happens next.
+  }
 }
 
 /**
