@@ -19,7 +19,7 @@
 
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join, sep } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { soreqenHome } from "./extensions.js";
 
@@ -135,7 +135,8 @@ export function updateNotice(info: PackageInfo = packageInfo()): string | null {
 
 /** How this copy was installed, so it is updated the same way. */
 export function installer(info: PackageInfo): { command: string; args: string[] } | { source: true } {
-  const path = info.dir.split(sep).join("/").toLowerCase();
+  // Both separators, whatever this system uses, so a path reads the same everywhere.
+  const path = info.dir.replace(/\\/g, "/").toLowerCase();
   // Run from the monorepo: updated with git.
   if (!path.includes("/node_modules/") && existsSync(join(info.dir, "src"))) return { source: true };
   const spec = `${info.name}@latest`;

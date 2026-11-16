@@ -53,7 +53,8 @@ describe("resolveBrowserTarget", () => {
   it("opens a file inside the workspace, resolved against the workspace", async () => {
     const url = await resolveBrowserTarget("index.html", root);
     expect(url.startsWith("file://")).toBe(true);
-    expect(fileURLToPath(url)).toBe(fs.realpathSync(path.join(root, "index.html")));
+    // The native realpath, as the guard resolves it: a Windows CI temp folder is a short name (RUNNER~1) only it expands.
+    expect(fileURLToPath(url)).toBe(fs.realpathSync.native(path.join(root, "index.html")));
   });
 
   it("keeps a query and a fragment on a local file instead of escaping them into its name", async () => {
