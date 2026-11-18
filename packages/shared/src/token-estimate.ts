@@ -193,11 +193,18 @@ export function contextWindowFor(model: string | undefined): number {
  */
 export function historyBudgetFor(options: {
   model?: string;
+  /**
+   * The model's window when the caller knows it (a hosted model's listing).
+   * Without it the name is looked up, and a name the table does not know gets
+   * 32k: on 18 Nov 2026 that left Hy4 Flash, GLM, Qwen, Kimi, Grok and SoreQen
+   * Auto a 4k history budget, so they checkpointed on every step.
+   */
+  windowTokens?: number;
   systemPromptTokens: number;
   toolSchemaTokens: number;
   maxOutputTokens?: number;
 }): number {
-  const total = contextWindowFor(options.model);
+  const total = options.windowTokens && options.windowTokens > 0 ? options.windowTokens : contextWindowFor(options.model);
   const reserved =
     options.systemPromptTokens + options.toolSchemaTokens + (options.maxOutputTokens ?? 8_192);
   // A floor, so a huge system prompt cannot drive the budget negative and

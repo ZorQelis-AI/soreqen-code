@@ -1603,6 +1603,8 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
    *  estimate learns the model's real limit instead of failing again. */
   let historyBudget = historyBudgetFor({
     model: options.model,
+    // The same window the meter and the checkpoint tier use, not a second lookup by name.
+    windowTokens,
     systemPromptTokens: systemTokens,
     toolSchemaTokens: toolTokens,
     maxOutputTokens: options.maxOutputTokens,

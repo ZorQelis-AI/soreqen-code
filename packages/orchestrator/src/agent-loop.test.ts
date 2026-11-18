@@ -663,6 +663,39 @@ describe("runAgentTurn", () => {
     expect(kinds).toContain("compaction");
     expect(String(result.history[0]!.content)).toContain("[Context summary]");
   }, 30_000);
+
+  it("does not checkpoint a short session on a hosted model the name table does not know", async () => {
+    // 18 Nov 2026: Hy4 Flash (1M window) checkpointed at ~5k tokens on every step, because the
+    // history budget looked its window up by name and got the 32k fallback.
+    const events: StreamEvent[] = [];
+    const provider = scripted(async function* () {
+      yield { type: "token", text: "Carrying on." };
+      yield { type: "stop", reason: "end_turn" };
+    });
+    const history: LLMMessage[] = [{ role: "user", content: "Build the game." }];
+    for (let i = 0; i < 8; i++) {
+      history.push({ role: "assistant", content: "", toolCalls: [{ id: `r${i}`, name: "read_file", input: { path: `f${i}` } }] });
+      history.push({ role: "tool", toolCallId: `r${i}`, content: "w".repeat(6_000) });
+    }
+    const result = await runAgentTurn({
+      workspaceId: wsId,
+      sessionId: "s_listed_window",
+      mode: "plan",
+      model: "hy4-flash",
+      contextWindow: 1_000_000,
+      history,
+      userMessage: "Continue.",
+      sandboxRunner: runner,
+      llmProvider: provider,
+      onEvent: (e) => {
+        events.push(e);
+      },
+    });
+    expect(result.stopReason).toBe("completed");
+    expect(events.filter((e) => e.type === "context_compacted")).toEqual([]);
+    // Only the turn's own request: no checkpoint reading beside it.
+    expect(provider.calls.length).toBe(1);
+  }, 30_000);
 });
 
 describe("reading a call that is still being written", () => {

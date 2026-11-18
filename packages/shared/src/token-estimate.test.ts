@@ -139,6 +139,13 @@ describe("contextWindowFor", () => {
 });
 
 describe("historyBudgetFor", () => {
+  it("uses a listed window over the name table (18 Nov 2026: hosted models checkpointed every step)", () => {
+    const listed = historyBudgetFor({ model: "hy4-flash", windowTokens: 1_000_000, systemPromptTokens: 9_000, toolSchemaTokens: 14_000, maxOutputTokens: 32_768 });
+    expect(listed).toBe(1_000_000 - 9_000 - 14_000 - 32_768);
+    // The negative control: by name alone the table does not know it, and the budget falls to its floor.
+    expect(historyBudgetFor({ model: "hy4-flash", systemPromptTokens: 9_000, toolSchemaTokens: 14_000, maxOutputTokens: 32_768 })).toBe(4_000);
+  });
+
   it("reserves room for the system prompt, the schemas and the reply", () => {
     const budget = historyBudgetFor({
       model: "gpt-4o",
