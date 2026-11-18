@@ -448,6 +448,8 @@ const EMPTY_RESPONSE_NUDGE =
  */
 export function isTransientModelError(err: unknown): boolean {
   if (err instanceof TurnCancelledError) return false;
+  // A spent plan window or balance is not a busy provider: asking again only fails again (17 Nov 2026).
+  if ((err as { type?: string })?.type === "usage_limit") return false;
   const status = (err as { status?: number })?.status;
   if (typeof status === "number") {
     return status === 408 || status === 409 || status === 425 || status === 429 || status >= 500;
@@ -1564,7 +1566,7 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
 
   const systemTokens = estimateTokens(systemPrompt);
   let toolTokens = estimateTokens(JSON.stringify(toolDefinitions));
-  const windowTokens = contextWindowFor(options.model);
+  const windowTokens = options.contextWindow ?? contextWindowFor(options.model);
 
   /**
    * `load_tools`: the connector tools named join the tool list from the next

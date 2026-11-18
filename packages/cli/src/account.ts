@@ -237,22 +237,14 @@ export async function fetchHostedModels(account: Account, fetchImpl: typeof fetc
   return markDefaultModel(await getJson<{ data?: HostedModel[]; default_model?: string | null }>(account, "models", fetchImpl));
 }
 
-/** Flex's models (or, with `query`, those matching it), and any Flow model the search named. */
-export async function fetchFlexModels(
-  account: Account,
-  query = "",
-  fetchImpl: typeof fetch = fetch,
-): Promise<{ models: FlexModel[]; flow: { id: string; name: string; message: string }[] }> {
+/** Flex's models, or with `query` those matching it. Flow models are on Flex too, under their Flex ids. */
+export async function fetchFlexModels(account: Account, query = "", fetchImpl: typeof fetch = fetch): Promise<{ models: FlexModel[] }> {
   try {
-    const body = await getJson<{ data?: FlexModel[]; flow_models?: { id: string; name: string; message: string }[] }>(
-      account,
-      `flex/models${query ? `?q=${encodeURIComponent(query)}` : ""}`,
-      fetchImpl,
-    );
-    return { models: body.data ?? [], flow: body.flow_models ?? [] };
+    const body = await getJson<{ data?: FlexModel[] }>(account, `flex/models${query ? `?q=${encodeURIComponent(query)}` : ""}`, fetchImpl);
+    return { models: body.data ?? [] };
   } catch (err) {
     if (err instanceof SignedOutError) throw err;
-    return { models: [], flow: [] };
+    return { models: [] };
   }
 }
 
@@ -293,6 +285,8 @@ export function hostedEntries(account: Account, models: HostedModel[], flex: Fle
       ...(window ? { contextWindow: window } : {}),
       ...(detail ? { detail } : {}),
       ...(m.default ? { isDefault: true } : {}),
+      // Switched off in Settings > Models on soreqen.com or in the app: kept, so `/model <id>` still reaches it.
+      ...(m.shown === false ? { hidden: true } : {}),
     };
   });
   const paid = flex.map((m): ModelEndpoint => {
@@ -305,6 +299,8 @@ export function hostedEntries(account: Account, models: HostedModel[], flex: Fle
       apiKey: account.token,
       ...(m.context_window ? { contextWindow: m.context_window } : {}),
       ...(detail ? { detail } : {}),
+      // Flex is listed once it is on for the account (its first top-up), and then only the models chosen.
+      ...(m.shown === true ? {} : { hidden: true }),
     };
   });
   return [...flow, ...paid];

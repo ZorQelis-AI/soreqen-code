@@ -47,16 +47,27 @@ export interface HostedModel {
   auto?: boolean;
   /** The model a new session starts on: the gateway's `default_model`, the cheap one. */
   default?: boolean;
+  /**
+   * False when an admin paused it ("not available currently", the catalogue's
+   * flow.unavailable): still listed so people see it is coming back, refused
+   * by the gateway with 503 model_unavailable. Absent means available.
+   */
+  available?: boolean;
+  /** False when the person switched it off in Settings > Models: kept, but not in the picker. Absent means shown. */
+  shown?: boolean;
+  vision?: boolean;
 }
 
 /** The gateway's model list, with its default marked. */
 export function markDefaultModel(body: { data?: HostedModel[]; default_model?: string | null }): HostedModel[] {
   const models = (body.data ?? []).filter((m) => typeof m.id === "string");
-  return models.map((m) => (m.id === body.default_model ? { ...m, default: true } : m));
+  // A paused model is never where a new session starts.
+  return models.map((m) => (m.id === body.default_model && m.available !== false ? { ...m, default: true } : m));
 }
 
 /** What a picker shows under a Flow model's name. */
 export function hostedDetail(m: HostedModel): string | undefined {
+  if (m.available === false) return "Not available currently";
   return m.auto ? "Picks the model for each step" : creditsDetail(m.credits_per_request);
 }
 
@@ -64,8 +75,26 @@ export function hostedDetail(m: HostedModel): string | undefined {
 export interface FlexModel {
   id: string;
   name: string;
+  provider?: string;
   context_window?: number | null;
   price?: { input: number; output: number };
+  available?: boolean;
+  /** In the catalogue's suggested set: shown until the person picks their own. */
+  suggested?: boolean;
+  /** In the picker now: Flex is on for this person and this model is one they show. */
+  shown?: boolean;
+}
+
+/** Which models a person wants in their pickers (the gateway's /code/v1/preferences/models). */
+export interface ModelPrefs {
+  flowHidden: string[];
+  flexEnabled: boolean | null;
+  flexShown: string[] | null;
+}
+
+export interface ModelPrefsState {
+  preferences: ModelPrefs;
+  flex: { on: boolean; has_purchase: boolean };
 }
 
 export type GatewayWindow = { used: number; limit: number; used_percent: number; resets_at: string; lifted?: boolean };
@@ -76,7 +105,8 @@ export interface GatewayUsage {
     purchased: { remaining: number; next_expiry: string | null };
     spendable_now: number;
   };
-  windows?: { five_hour: GatewayWindow; weekly: GatewayWindow; burst: { active: boolean; used: number; limit: number; ends_at: string | null; available_at: string | null } } | null;
+  /** `burst` is null on Free, which has windows but no Burst Day. */
+  windows?: { five_hour: GatewayWindow; weekly: GatewayWindow; burst: { active: boolean; used: number; limit: number; ends_at: string | null; available_at: string | null } | null } | null;
   flex?: { balance_usd: number };
   message?: string;
 }

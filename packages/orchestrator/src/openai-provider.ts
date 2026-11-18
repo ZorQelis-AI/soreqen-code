@@ -64,6 +64,9 @@ export class ProviderError extends Error {
   constructor(
     message: string,
     public readonly status?: number,
+    /** The error's `type` from the body, e.g. "usage_limit" when SoreQen refuses for a spent window. */
+    public readonly type?: string,
+    public readonly code?: string,
   ) {
     super(message);
     this.name = "ProviderError";
@@ -314,8 +317,9 @@ export function sanitizeChatMessages(input: ChatMessage[]): ChatMessage[] {
  * reasoning is sent nothing it did not ask for.
  */
 export function toOpenAIMessages(
-  options: Pick<LLMChatOptions, "system" | "messages">,
+  options: Pick<LLMChatOptions, "system" | "messages" | "cacheKey">,
   reasoningKey: ReasoningKey | null,
+  memory?: FrameMemory,
 ): OpenAI.ChatCompletionMessageParam[] {
   const messages: OpenAI.ChatCompletionMessageParam[] = [];
 
@@ -391,7 +395,57 @@ export function toOpenAIMessages(
     }
   }
 
-  return withFrameIn(sanitizeChatMessages(messages), frame);
+  return withFrameIn(sanitizeChatMessages(messages), frame, memory, options.cacheKey ?? "");
+}
+
+/**
+ * Working sets already sent, kept where they were sent.
+ *
+ * Each step's working set rides inside the last tool result. Dropped on the
+ * next step, it was an edit to a message the provider had already cached, so
+ * the cache stopped there: measured 17 Nov 2026 through SoreQen's gateway,
+ * GPT 6 Luna read only its 17,289-token system prompt and tools on every step
+ * and wrote the whole conversation again at the write price, and Claude's
+ * breakpoints (system prompt, last message) had nothing in between to fall
+ * back on. Sent again verbatim, every request extends the one before, as the
+ * native Claude provider already does (`anthropic-provider.ts`).
+ *
+ * Copies here are read from cache, not free, so they are capped: past
+ * `FRAME_MEMORY_CHARS` the memory starts over, one cache miss instead of a
+ * prompt that keeps growing.
+ */
+export interface FrameMemory {
+  /** By where it was sent: `t:<call id>` for a tool result, `u:<index>:<hash>` after the person's message. */
+  kept: Map<string, string>;
+  /** This request's working set, remembered only once the request is accepted. */
+  pending: { key: string; text: string } | null;
+}
+
+export const FRAME_MEMORY_CHARS = 60_000;
+
+export function newFrameMemory(): FrameMemory {
+  return { kept: new Map(), pending: null };
+}
+
+/** Remember the working set the accepted request carried, and forget the oldest when they grow too long. */
+export function commitFrame(memory: FrameMemory): void {
+  const p = memory.pending;
+  memory.pending = null;
+  if (!p) return;
+  let total = p.text.length;
+  for (const v of memory.kept.values()) total += v.length;
+  if (total > FRAME_MEMORY_CHARS) memory.kept.clear();
+  memory.kept.set(p.key, p.text);
+}
+
+function textHash(text: string): string {
+  let h = 2166136261;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 16777619);
+  return (h >>> 0).toString(36);
+}
+
+function contentText(content: unknown): string {
+  return typeof content === "string" ? content : JSON.stringify(content);
 }
 
 /**
@@ -408,15 +462,55 @@ export function toOpenAIMessages(
  * At the start of a turn there is no tool result, and it joins the person's
  * message, which is a new question anyway.
  */
-function withFrameIn(messages: ChatMessage[], frame: LLMMessage | undefined): ChatMessage[] {
-  if (!frame) return messages;
-  const text = typeof frame.content === "string" ? frame.content : JSON.stringify(frame.content);
-  const last = messages[messages.length - 1];
-  if (last?.role === "tool") {
-    const before = typeof last.content === "string" ? last.content : JSON.stringify(last.content);
-    return [...messages.slice(0, -1), { ...last, content: `${before}\n\n${text}` }];
+function withFrameIn(
+  messages: ChatMessage[],
+  frame: LLMMessage | undefined,
+  memory?: FrameMemory,
+  session = "",
+): ChatMessage[] {
+  if (memory) memory.pending = null;
+  const userKey = (i: number, m: ChatMessage): string => `${session}|u:${i}:${textHash(contentText(m.content))}`;
+  const toolKey = (id: string): string => `${session}|t:${id}`;
+
+  // Earlier working sets, back where they were sent.
+  let out = messages;
+  if (memory && memory.kept.size > 0) {
+    out = [];
+    const live = new Set<string>();
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i]!;
+      if (m.role === "tool") {
+        const key = toolKey(m.tool_call_id);
+        const kept = memory.kept.get(key);
+        live.add(key);
+        out.push(kept === undefined ? m : { ...m, content: `${contentText(m.content)}\n\n${kept}` });
+        continue;
+      }
+      out.push(m);
+      if (m.role === "user" && i < messages.length - 1) {
+        const key = userKey(i, m);
+        const kept = memory.kept.get(key);
+        live.add(key);
+        if (kept !== undefined) out.push({ role: "user", content: kept });
+      }
+    }
+    // A checkpoint dropped the messages some were sent with: those are gone for good.
+    if (memory.kept.size > 64) for (const key of memory.kept.keys()) if (!live.has(key)) memory.kept.delete(key);
+    out = sanitizeChatMessages(out);
   }
-  return sanitizeChatMessages([...messages, { role: "user", content: text }]);
+
+  if (!frame) return out;
+  const text = contentText(frame.content);
+  const last = out[out.length - 1];
+  if (last?.role === "tool") {
+    // A result already carrying a kept copy (the same step sent again) keeps that one only.
+    if (memory?.kept.has(toolKey(last.tool_call_id))) return out;
+    if (memory) memory.pending = { key: toolKey(last.tool_call_id), text };
+    return [...out.slice(0, -1), { ...last, content: `${contentText(last.content)}\n\n${text}` }];
+  }
+  const lastUser = messages.length - 1;
+  if (memory && messages[lastUser]?.role === "user") memory.pending = { key: userKey(lastUser, messages[lastUser]!), text };
+  return sanitizeChatMessages([...out, { role: "user", content: text }]);
 }
 
 export class OpenAICompatibleProvider implements LLMProvider {
@@ -442,6 +536,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
   private readonly dialects = new Map<string, RequestDialect>();
   /** SoreQen's hosted models, which read SoreQen Auto's step hints. */
   private readonly soreqenHosted: boolean;
+  /** Working sets already sent, sent again in the same place: see `FrameMemory`. */
+  private readonly frames = newFrameMemory();
 
   constructor(options?: OpenAICompatibleProviderOptions) {
     const apiKey =
@@ -531,7 +627,7 @@ export class OpenAICompatibleProvider implements LLMProvider {
   async *chatStream(options: LLMChatOptions): AsyncIterable<LLMResponseChunk> {
     const model = options.model ?? this.defaultModel;
 
-    const messages = toOpenAIMessages(options, this.reasoningKey);
+    const messages = toOpenAIMessages(options, this.reasoningKey, this.frames);
 
     const tools: OpenAI.ChatCompletionTool[] = (options.tools ?? []).map((t) => ({
       type: "function",
@@ -574,6 +670,8 @@ export class OpenAICompatibleProvider implements LLMProvider {
           this.dialects.set(model, next);
         }
       }
+      // Accepted: this working set is now part of what the provider has seen.
+      commitFrame(this.frames);
 
       const activeToolCalls = new Map<
         number,
@@ -690,9 +788,17 @@ export class OpenAICompatibleProvider implements LLMProvider {
        * not a provider failure, and must not be shown as one.
        */
       if (options.signal?.aborted) return;
-      const status = (err as { status?: number }).status;
+      const e = err as { status?: number; type?: string; code?: string; error?: { type?: string; code?: string; message?: string } };
+      const status = e.status;
+      const type = e.type ?? e.error?.type;
+      const code = e.code ?? e.error?.code;
       const msg = err instanceof Error ? err.message : String(err);
-      throw new ProviderError(`The model request failed: ${msg}`, status);
+      // SoreQen's own limit (a spent window or balance): its message is written for the person and names
+      // when the window resets, so it is shown as it is, and the turn stops instead of retrying.
+      if (status === 429 && type === "usage_limit") {
+        throw new ProviderError(e.error?.message ?? msg.replace(/^429\s+/, ""), status, type, code);
+      }
+      throw new ProviderError(`The model request failed: ${msg}`, status, type, code);
     }
   }
 }

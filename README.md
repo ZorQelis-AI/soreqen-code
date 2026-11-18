@@ -1,18 +1,48 @@
-# SoreQen Code
+<h1 align="center">SoreQen Code</h1>
 
-An autonomous coding agent for your terminal. It reads your project, plans, edits files, runs commands and tests,
-checks its own work, and reports what it actually did.
+<p align="center">
+  An autonomous coding agent for your terminal.<br>
+  It reads your project, plans, edits files, runs commands and tests, checks its own work, and reports what it actually did.
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/soreqen-code"><img alt="npm" src="https://img.shields.io/npm/v/soreqen-code?color=D6FF4B&labelColor=0E100D&label=npm"></a>
+  <a href="https://github.com/ZorQelis-AI/soreqen-code/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/ZorQelis-AI/soreqen-code/actions/workflows/ci.yml/badge.svg"></a>
+  <a href="LICENSE"><img alt="Licence: Apache-2.0" src="https://img.shields.io/badge/licence-Apache--2.0-D6FF4B?labelColor=0E100D"></a>
+  <img alt="Node 20 or newer" src="https://img.shields.io/badge/node-%E2%89%A520-D6FF4B?labelColor=0E100D">
+</p>
+
+<p align="center">
+  <img src=".github/assets/soreqen-code-cli.png" alt="SoreQen Code in a terminal: it runs the failing tests, reads the function, fixes it, runs the tests again, and reports what it verified and what it did not check" width="760">
+</p>
 
 SoreQen Code is made by [ZorQelis AI](https://zorqelisai.com). This repository is the open-source CLI and the
-agent behind it, under the Apache-2.0 licence.
+agent behind it, under the Apache-2.0 licence. The same agent also runs in the
+[SoreQen desktop app](https://soreqen.com/download), with your phone as a remote.
 
 ## Install
+
+Node.js 20 or newer, on macOS, Linux or Windows. Use whichever package manager you have:
 
 ```bash
 npm install -g soreqen-code
 ```
 
-Node.js 20 or newer. Then, in a project folder:
+```bash
+pnpm add -g soreqen-code
+```
+
+```bash
+yarn global add soreqen-code
+```
+
+```bash
+bun add -g soreqen-code
+```
+
+Or try it once without installing anything: `npx soreqen-code`.
+
+Then, in a project folder:
 
 ```bash
 soreqen

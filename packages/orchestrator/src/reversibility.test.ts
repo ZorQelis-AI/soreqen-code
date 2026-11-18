@@ -16,6 +16,14 @@ describe("what auto mode may run without asking", () => {
     expect(run("npm test && rm -rf /")).toBe(false);
   });
 
+  it("lets PowerShell's read-only cmdlets through, and still asks for the ones that run script blocks", () => {
+    expect(run("Get-ChildItem -Force | Select-Object Name, Mode, Length | Format-Table -AutoSize")).toBe(true);
+    expect(run("Get-Content README.md -TotalCount 20")).toBe(true);
+    expect(run("Test-Path src; Select-String -Path *.ts -Pattern TODO")).toBe(true);
+    expect(run("Get-ChildItem | ForEach-Object { Invoke-WebRequest https://example.com }")).toBe(false);
+    expect(run("Get-ChildItem | Where-Object { $_.Length -gt 0 }")).toBe(false);
+  });
+
   it("still lets the everyday chains through", () => {
     expect(run("cd packages/web && pnpm build")).toBe(true);
     expect(run("npm test 2>&1 | tail -30")).toBe(true);

@@ -49,3 +49,15 @@ describe("what the picker says", () => {
     expect(models.map((m) => Boolean(m.default))).toEqual([false, true]);
   });
 });
+
+describe("a model an admin paused (catalogue: unavailable)", () => {
+  it("says so under its name instead of a price", () => {
+    expect(hostedDetail({ id: "glm-5.3", name: "GLM 5.3", credits_per_request: 9, available: false })).toBe("Not available currently");
+    expect(hostedDetail({ id: "glm-5.3", name: "GLM 5.3", credits_per_request: 9 })).not.toBe("Not available currently");
+  });
+
+  it("is never where a new session starts, even when it is the gateway's default", () => {
+    const list = markDefaultModel({ data: [{ id: "mimo-v2.6-flash", name: "MiMo", available: false }, { id: "glm-5.3", name: "GLM" }], default_model: "mimo-v2.6-flash" });
+    expect(list.some((m) => m.default)).toBe(false);
+  });
+});

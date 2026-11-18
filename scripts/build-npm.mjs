@@ -68,10 +68,14 @@ writeFileSync(
       description: "SoreQen Code: an autonomous coding agent for your terminal. Sign in with SoreQen or bring your own API key.",
       license: "Apache-2.0",
       type: "module",
-      bin: { soreqen: "bin/soreqen.js" },
+      // `soreqen` is the command; `soreqen-code` too, so `npx soreqen-code` and the package name both work.
+      bin: { soreqen: "bin/soreqen.js", "soreqen-code": "bin/soreqen.js" },
       files: ["bin", "dist", "README.md", "LICENSE", "NOTICE"],
       engines: { node: ">=20" },
-      keywords: ["ai", "coding-agent", "cli", "mcp", "soreqen"],
+      keywords: ["ai", "coding-agent", "ai-agent", "cli", "terminal", "llm", "mcp", "developer-tools", "code-assistant", "soreqen"],
+      author: "ZorQelis AI (https://zorqelisai.com)",
+      homepage: cli.repository ? cli.repository.url.replace(/\.git$/, "") + "#readme" : "https://soreqen.com",
+      ...(cli.repository ? { bugs: { url: cli.repository.url.replace(/\.git$/, "") + "/issues" } } : {}),
       dependencies: { playwright: tools.dependencies.playwright },
       optionalDependencies: { "node-pty": runner.optionalDependencies["node-pty"] },
       ...(cli.repository ? { repository: { ...cli.repository, directory: undefined } } : {}),
@@ -80,6 +84,10 @@ writeFileSync(
     2,
   )}\n`,
 );
-for (const f of ["README.md", "LICENSE", "NOTICE"]) cpSync(join(root, f), join(out, f));
+for (const f of ["LICENSE", "NOTICE"]) cpSync(join(root, f), join(out, f));
+// npmjs.com cannot load a README's relative images: point them at the repository's raw files.
+const raw = cli.repository ? cli.repository.url.replace(/\.git$/, "").replace("https://github.com/", "https://raw.githubusercontent.com/") + "/main/" : null;
+const readme = readFileSync(join(root, "README.md"), "utf8");
+writeFileSync(join(out, "README.md"), raw ? readme.replace(/(src|href)="(?!https?:|#)([^"]+)"/g, (_, attr, rel) => `${attr}="${attr === "src" ? raw : raw.replace("raw.githubusercontent.com", "github.com").replace(/\/main\/$/, "/blob/main/")}${rel}"`) : readme);
 
 console.log(`npm package ${NPM_NAME}@${cli.version} built in ${out}. Check it with \`npm pack --dry-run\` there, then \`npm publish\`.`);

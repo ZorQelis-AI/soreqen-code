@@ -81,6 +81,11 @@ export interface ModelEndpoint {
   detail?: string;
   /** The model a new session starts on, when it is not simply the first. */
   isDefault?: boolean;
+  /**
+   * Switched off in Settings > Models: still usable (a session already on it
+   * keeps working), but left out of the picker.
+   */
+  hidden?: boolean;
 }
 
 export function parseModelCatalogue(

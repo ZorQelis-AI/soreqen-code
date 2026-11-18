@@ -395,6 +395,10 @@ const RECOGNISED_SAFE = new RegExp(
       "(ls|dir|cat|head|tail|wc|stat|file|du|tree|pwd|which|echo|printf)\\b",
       "(grep|rg|ag|ack|fd|find)\\b(?![^|;&]*-exec)",
       "(diff|sort|uniq|cut|sed|awk|jq|tr)\\b",
+      // PowerShell's read-only cmdlets and their aliases: the shell SoreQen Code runs on Windows. Not
+      // Where-Object or ForEach-Object, whose script blocks can run anything (17 Nov 2026: a plain
+      // Get-ChildItem asked for approval in Auto mode).
+      "(get-childitem|gci|get-content|gc|get-item|gi|get-itemproperty|gp|get-location|gl|test-path|resolve-path|split-path|join-path|select-string|sls|measure-object|select-object|sort-object|format-table|ft|format-list|fl|format-wide|out-string|get-date|get-command|gcm|get-filehash|write-output|write-host)\\b",
       // local version control
       "git\\s+(status|log|diff|show|add|commit|branch|checkout|switch|restore|stash|fetch|merge|rebase|blame|rev-parse|ls-files|worktree|init|remote\\s+-v)\\b",
       // filesystem inside the workspace

@@ -3,7 +3,7 @@
  *
  * Two answers, and the CLI asks rather than guessing:
  *
- *   1. Sign in with a SoreQen account. Plus and Pro include hosted models,
+ *   1. Sign in with a SoreQen account. Every plan, Free included, has credits for the hosted models,
  *      within the plan's limits; a Free account signs in and then adds a key.
  *   2. Bring your own API key: pick a provider, paste the key (not echoed),
  *      and pick a model — from the provider's own list where it has one.
@@ -196,7 +196,7 @@ export async function runSetup(): Promise<{ account: Account | null; model?: str
   const way = await choose(
     "Choose one",
     [
-      { id: "signin", label: `Sign in with SoreQen    ${chalk.dim("Plus and Pro include hosted models")}` },
+      { id: "signin", label: `Sign in with SoreQen    ${chalk.dim("Credits for the hosted models on every plan")}` },
       { id: "key", label: `Use my own API key       ${chalk.dim("OpenAI, Anthropic, OpenRouter, DeepSeek, OpenCode")}` },
     ],
     (o) => o.label,

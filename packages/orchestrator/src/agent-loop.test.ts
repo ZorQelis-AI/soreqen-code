@@ -24,6 +24,7 @@ import {
   modelRetryDelayMs,
 } from "./agent-loop.js";
 import { MockLLMProvider } from "./llm-provider.js";
+import { ProviderError } from "./openai-provider.js";
 import type { LLMChatOptions, LLMMessage, LLMProvider, LLMResponseChunk, MessageMeta } from "./types.js";
 
 type Script = (options: LLMChatOptions, call: number) => AsyncIterable<LLMResponseChunk>;
@@ -684,6 +685,12 @@ describe("which failures are worth another attempt", () => {
     expect(isTransientModelError(new Error("terminated"))).toBe(true);
     expect(isTransientModelError(Object.assign(new Error("rate limited"), { status: 429 }))).toBe(true);
     expect(isTransientModelError(Object.assign(new Error("bad gateway"), { status: 502 }))).toBe(true);
+  });
+
+  it("does not retry a spent plan window: SoreQen's usage limit is not a busy provider (17 Nov 2026)", () => {
+    // It retried "The model provider is rate limiting requests" for ever on a Free account's spent 5-hour window.
+    expect(isTransientModelError(new ProviderError("Your 5-hour limit is used up.", 429, "usage_limit", "five_hour_exhausted"))).toBe(false);
+    expect(isTransientModelError(new ProviderError("The model request failed: 429 slow down", 429, "rate_limit_error"))).toBe(true);
   });
 
   it("does not retry a request that is wrong", () => {

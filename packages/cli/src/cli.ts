@@ -285,7 +285,7 @@ async function startAgentSession(
     };
   } else {
     if (hostedUsage && !hostedUsage.hosted) {
-      console.log(`\n  ${chalk.dim(`Signed in as ${account?.email ?? "you"} on ${hostedUsage.plan}: hosted models come with Plus and Pro.`)}`);
+      console.log(`\n  ${chalk.dim(`Signed in as ${account?.email ?? "you"} on ${hostedUsage.plan}: this account has no hosted models right now.`)}`);
     }
     if (!interactive) exitWith(new MissingApiKeyError().message);
     setupModel = await setupOwnKey();
@@ -417,6 +417,16 @@ async function startAgentSession(
   for (const e of handAdded) {
     if (!findModel(catalogue, e.id)) catalogue.push(e);
   }
+  /*
+   * `--base-url` on the command line names the endpoint outright, so it wins
+   * over a same-named model from the environment's catalogue. Before 18 Nov
+   * 2026 it lost: with OPENCODE_MODEL listing mimo-v2.6-flash,
+   * `--base-url http://localhost:… -m mimo-v2.6-flash` still went to OpenCode
+   * with the environment's key.
+   */
+  if (ownConfig && opts.baseUrl && ownConfig.provider !== "anthropic") {
+    for (let hit = findModel(catalogue, ownConfig.model); hit; hit = findModel(catalogue, ownConfig.model)) catalogue.splice(catalogue.indexOf(hit), 1);
+  }
   if (ownConfig && ownConfig.provider !== "anthropic" && ownConfig.baseURL && !findModel(catalogue, ownConfig.model)) {
     catalogue.push({
       id: ownConfig.model,
@@ -464,7 +474,7 @@ async function startAgentSession(
   setModelDirectoryCache(join(soreqenHome(), "cache", "models-dev.json"));
   void discoverContextWindows(catalogue);
   const catalogueProviders = new Map<string, LLMProvider>();
-  const turnModel = (): { model: string; llmProvider?: LLMProvider } => {
+  const turnModel = (): { model: string; llmProvider?: LLMProvider; contextWindow?: number } => {
     const endpoint = findModel(catalogue, currentModel);
     if (!endpoint) return { model: currentModel };
     let provider = catalogueProviders.get(endpoint.id);
@@ -479,7 +489,8 @@ async function startAgentSession(
       });
       catalogueProviders.set(endpoint.id, provider);
     }
-    return { model: endpoint.upstreamModel, llmProvider: provider };
+    // The window the catalogue states wins over the name table (a hosted model's, capped below its price step).
+    return { model: endpoint.upstreamModel, llmProvider: provider, ...(endpoint.contextWindow ? { contextWindow: endpoint.contextWindow } : {}) };
   };
 
   /*
@@ -2147,9 +2158,12 @@ async function startAgentSession(
 
     if (command === "/model") {
       let modelCandidate = input.split(/\s+/)[1];
+      // What the list shows: models switched off in Settings stay out, except the one in use.
+      const currentId = findModel(catalogue, currentModel)?.id ?? currentModel;
+      const listedModels = catalogue.filter((m) => !m.hidden || m.id === currentId);
       // `/model 2` picks the second listed model, so nobody has to type an id.
       if (modelCandidate && /^\d+$/.test(modelCandidate)) {
-        const picked = catalogue[Number(modelCandidate) - 1];
+        const picked = listedModels[Number(modelCandidate) - 1];
         if (picked) modelCandidate = picked.id;
       }
       if (!modelCandidate) {
@@ -2157,13 +2171,18 @@ async function startAgentSession(
           console.log(chalk.red("✖ Please specify a model name (e.g. /model mimo-v2.6-flash)\n"));
         } else {
           // No argument lists what can be chosen, numbered, marking the current one.
-          const current = findModel(catalogue, currentModel)?.id ?? currentModel;
+          const current = currentId;
           console.log("");
-          catalogue.forEach((m, i) => {
+          listedModels.forEach((m, i) => {
             const mark = m.id === current ? c.brand(glyph.ok) : " ";
             console.log(`  ${mark} ${c.muted(`${i + 1}.`)} ${c.text(m.label.padEnd(22))} ${c.muted(m.id)}`);
           });
-          console.log(`\n  ${c.muted("Switch with /model <number> or /model <id>")}\n`);
+          const hiddenCount = catalogue.length - listedModels.length;
+          console.log(
+            `\n  ${c.muted("Switch with /model <number> or /model <id>")}` +
+              (hiddenCount > 0 ? `\n  ${c.muted(`${hiddenCount} more switched off in Settings > Models on soreqen.com`)}` : "") +
+              "\n",
+          );
         }
       } else {
         const endpoint = findModel(catalogue, modelCandidate);
@@ -2368,7 +2387,7 @@ export async function runCli(args: string[] = process.argv): Promise<void> {
      * "nothing passed" and a model chosen with `/model` was forgotten on every
      * restart. The fallback to MiMo lives in `loadCliConfig`.
      */
-    .option("-m, --model <model>", "Model to use, e.g. mimo-v2.6-flash or deepseek-4.1-flash")
+    .option("-m, --model <model>", "Model to use, e.g. mimo-v2.6-flash or deepseek-v4.1-flash")
     .option("-k, --api-key <key>", "OpenCode / OpenAI / Anthropic API Key")
     .option("-u, --base-url <url>", "Custom OpenAI-compatible API base URL")
     /*
@@ -2413,7 +2432,7 @@ export async function runCli(args: string[] = process.argv): Promise<void> {
    */
   program
     .command("login")
-    .description("Sign in with your SoreQen account (Plus and Pro include hosted models)")
+    .description("Sign in with your SoreQen account (every plan, Free included, has credits for the hosted models)")
     .action(async () => {
       loadEnvFiles();
       const existing = loadAccount();
@@ -2479,7 +2498,7 @@ export async function runCli(args: string[] = process.argv): Promise<void> {
 
   program
     .command("flex [search]")
-    .description("Find a Flex model: any model outside the Flow catalogue, at its provider's price")
+    .description("Find a Flex model and its price: paid from your Flex balance, at the provider's own price")
     .action(async (search?: string) => {
       const account = loadAccount();
       if (!account) {
@@ -2488,15 +2507,12 @@ export async function runCli(args: string[] = process.argv): Promise<void> {
       }
       const found = await fetchFlexModels(account, search ?? "");
       console.log("");
-      // A Flow model asked for here: it runs on credits, not on Flex.
-      for (const f of found.flow) console.log(`  ${f.message}`);
-      if (found.flow.length) console.log("");
       for (const m of found.models.slice(0, 40)) {
         const price = m.price ? `$${m.price.input} in, $${m.price.output} out per M` : "";
         console.log(`  ${m.id.padEnd(44)} ${price}`);
       }
       if (found.models.length > 40) console.log(`  ... and ${found.models.length - 40} more: narrow the search.`);
-      if (found.models.length === 0 && found.flow.length === 0) console.log("  No Flex model matches that.");
+      if (found.models.length === 0) console.log("  No Flex model matches that.");
       console.log(`\n  Use one with /model soreqen/flex/<id>. Flex is paid from your Flex balance: top up at soreqen.com/credits.\n`);
     });
 

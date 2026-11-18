@@ -183,6 +183,18 @@ export function describeAutoCompact(setting: number | null | undefined, windowTo
   return setting <= 100 ? `${setting}%` : `${formatTokenCount(setting)} tokens`;
 }
 
+/**
+ * The context panel's one line about checkpoints: "Auto checkpoint at 480k".
+ * The longer story (older turns move into task memory, /checkpoint-at changes
+ * the point) is the line's tooltip, not more text in the panel.
+ */
+export function checkpointLine(setting: number | null | undefined, windowTokens?: number): string {
+  if (setting == null) {
+    return windowTokens ? `Auto checkpoint at ${formatTokenCount(checkpointTierFor(windowTokens).checkpointAt)}` : "Auto checkpoint on";
+  }
+  return `Auto checkpoint at ${setting <= 100 ? `${setting}%` : formatTokenCount(setting)}`;
+}
+
 /** 950 · 12.3k · 524k · 1.2M */
 export function formatTokenCount(n: number): string {
   if (n < 1_000) return String(Math.max(0, Math.round(n)));

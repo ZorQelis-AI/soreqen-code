@@ -20,7 +20,7 @@
     "clean": "rimraf dist"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "1.31.0",
+    "@modelcontextprotocol/sdk": "1.32.0",
     "@sqcode/orchestrator": "workspace:*",
     "@sqcode/sandbox-runner": "workspace:*",
     "@sqcode/tools": "workspace:*"

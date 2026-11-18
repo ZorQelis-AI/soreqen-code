@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { OpenAICompatibleProvider, reasoningDeltaOf, toOpenAIMessages } from "./openai-provider.js";
+import { FRAME_MEMORY_CHARS, OpenAICompatibleProvider, commitFrame, newFrameMemory, reasoningDeltaOf, toOpenAIMessages } from "./openai-provider.js";
 import type { LLMMessage } from "./types.js";
 import { withFrame } from "./context/engine.js";
 
@@ -148,5 +148,65 @@ describe("SoreQen Auto step hints", () => {
     const h = await headersSent("/v1");
     expect(h["x-soreqen-step"]).toBeUndefined();
     expect(h["x-soreqen-failures"]).toBeUndefined();
+  });
+});
+
+/*
+ * Prompt caching through SoreQen's gateway (17 Nov 2026): a working set dropped
+ * on the next step was an edit to a cached message, so GPT 6 Luna re-wrote the
+ * whole conversation on every step. Every request must now extend the last.
+ */
+describe("working sets stay where they were sent", () => {
+  const call = (id: string): LLMMessage => ({ role: "assistant", content: "", toolCalls: [{ id, name: "read_file", input: { path: id } }] });
+  const result = (id: string): LLMMessage => ({ role: "tool", toolCallId: id, content: `contents of ${id}` });
+  const send = (memory: ReturnType<typeof newFrameMemory>, history: LLMMessage[], frame: string) => {
+    const sent = toOpenAIMessages({ system: "sys", messages: withFrame(history, frame), cacheKey: "s1" }, null, memory);
+    commitFrame(memory);
+    return JSON.stringify(sent);
+  };
+
+  it("makes every step's request start with the whole of the one before", () => {
+    const memory = newFrameMemory();
+    let history: LLMMessage[] = [{ role: "user", content: "Fix the bug" }];
+    const first = send(memory, history, "[Working set 1]");
+    history = [...history, call("c1"), result("c1")];
+    const second = send(memory, history, "[Working set 2]");
+    history = [...history, call("c2"), result("c2")];
+    const third = send(memory, history, "[Working set 3]");
+    // The messages array closes with "]": everything before it must reappear, byte for byte.
+    expect(second.startsWith(first.slice(0, -1))).toBe(true);
+    expect(third.startsWith(second.slice(0, -1))).toBe(true);
+    expect(third).toContain("[Working set 1]");
+    expect(third).toContain("[Working set 3]");
+  });
+
+  it("forgets a working set whose request was never accepted", () => {
+    const memory = newFrameMemory();
+    const history: LLMMessage[] = [{ role: "user", content: "Go" }, call("c1"), result("c1")];
+    toOpenAIMessages({ system: "s", messages: withFrame(history, "[refused]"), cacheKey: "s1" }, null, memory);
+    const next = send(memory, [...history, call("c2"), result("c2")], "[accepted]");
+    expect(next).not.toContain("[refused]");
+  });
+
+  it("starts over once the kept copies grow past the cap", () => {
+    const memory = newFrameMemory();
+    let history: LLMMessage[] = [{ role: "user", content: "Go" }];
+    const big = "x".repeat(Math.ceil(FRAME_MEMORY_CHARS / 3));
+    for (let i = 0; i < 5; i++) {
+      history = [...history, call(`c${i}`), result(`c${i}`)];
+      send(memory, history, `${big}${i}`);
+    }
+    let total = 0;
+    for (const v of memory.kept.values()) total += v.length;
+    expect(total).toBeLessThanOrEqual(FRAME_MEMORY_CHARS);
+  });
+
+  it("never carries one session's working set into another", () => {
+    const memory = newFrameMemory();
+    const opening: LLMMessage[] = [{ role: "user", content: "hi" }];
+    toOpenAIMessages({ system: "s", messages: withFrame(opening, "[A's working set]"), cacheKey: "A" }, null, memory);
+    commitFrame(memory);
+    const other = toOpenAIMessages({ system: "s", messages: withFrame([...opening, call("c1"), result("c1")], "[B]"), cacheKey: "B" }, null, memory);
+    expect(JSON.stringify(other)).not.toContain("A's working set");
   });
 });

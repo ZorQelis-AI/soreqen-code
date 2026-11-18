@@ -111,7 +111,7 @@ export class MissingApiKeyError extends Error {
   constructor() {
     super(
       "SoreQen Code needs a model to talk to. Either:\n\n" +
-        "  soreqen login          sign in with your SoreQen account (Plus and Pro include hosted models)\n" +
+        "  soreqen login          sign in with your SoreQen account (credits for the hosted models on every plan)\n" +
         "  soreqen keys set ...   use your own API key\n\n" +
         "or set one of these in a .env file beside your project or in ~/.soreqen/.env:\n" +
         "  OPENCODE_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY, OPENROUTER_API_KEY, DEEPSEEK_API_KEY\n\n" +

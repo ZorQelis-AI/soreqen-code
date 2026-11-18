@@ -374,6 +374,12 @@ export interface AgentTurnOptions {
   /** Model id, used to size the context budget. Falls back to a small,
    *  conservative window when absent. */
   model?: string;
+  /**
+   * The window the host states for this model, when it states one: it wins
+   * over the name table, which knows nothing of a model added to a catalogue
+   * after this build (SoreQen's hosted models, 17 Nov 2026).
+   */
+  contextWindow?: number;
   /** Reserved for the model's reply when computing the history budget. */
   maxOutputTokens?: number;
   /**

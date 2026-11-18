@@ -87,6 +87,8 @@ export class SoreQenOrchestrator {
     plan?: TodoItem[];
     /** Sizes the context budget. Without it the loop assumes a small window. */
     model?: string;
+    /** The model's window as the host states it; wins over the name table. */
+    contextWindow?: number;
     maxOutputTokens?: number;
     maxTurnTokens?: number;
     maxIterations?: number;
@@ -129,6 +131,7 @@ export class SoreQenOrchestrator {
       sandboxRunner: this.sandboxRunner,
       llmProvider: options.llmProvider ?? this.llmProvider,
       model: options.model,
+      ...(options.contextWindow ? { contextWindow: options.contextWindow } : {}),
       maxOutputTokens: options.maxOutputTokens,
       maxTurnTokens: options.maxTurnTokens,
       maxIterations: options.maxIterations,
