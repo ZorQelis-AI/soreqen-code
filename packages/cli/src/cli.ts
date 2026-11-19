@@ -156,7 +156,7 @@ import { createInputRouter, type InputRouter } from "./input-router.js";
 import { c, effortStyle, glyph, modeStyle, rule, tierStyle } from "./theme.js";
 import { clearSession, describeAge, loadSession, saveSession } from "./session-store.js";
 import { appendAuditRecord, auditPathFor } from "./audit-file.js";
-import { discoverContextWindows, findModel, parseModelCatalogue, setModelDirectoryCache } from "@sqcode/orchestrator";
+import { discoverContextWindows, findModel, parseModelCatalogue, setModelDirectoryCache, untilCancelled } from "@sqcode/orchestrator";
 import { fromProjectEnv, loadEnvFiles } from "./config.js";
 import { attachToPrompt } from "./attach.js";
 
@@ -427,7 +427,10 @@ async function startAgentSession(
   if (ownConfig && opts.baseUrl && ownConfig.provider !== "anthropic") {
     for (let hit = findModel(catalogue, ownConfig.model); hit; hit = findModel(catalogue, ownConfig.model)) catalogue.splice(catalogue.indexOf(hit), 1);
   }
-  if (ownConfig && ownConfig.provider !== "anthropic" && ownConfig.baseURL && !findModel(catalogue, ownConfig.model)) {
+  // A `soreqen/` name is a plan model, never the own key's: with soreqen.com
+  // unreachable at start, `-m soreqen/hy4-flash` became an "own key" entry and
+  // the turn went to the own key's provider under that name.
+  if (ownConfig && ownConfig.provider !== "anthropic" && ownConfig.baseURL && !ownConfig.model.startsWith(HOSTED_PREFIX) && !findModel(catalogue, ownConfig.model)) {
     catalogue.push({
       id: ownConfig.model,
       label: `${ownConfig.model} · your key`,
@@ -450,6 +453,8 @@ async function startAgentSession(
         const [usage, models, flex] = await Promise.all([fetchUsage(account), fetchHostedModels(account), fetchFlexModels(account)]);
         if (usage.hosted) {
           const entries = hostedEntries(account, models, flex.models);
+          // As at start: a hosted model's window is known by its `soreqen/` id only.
+          for (const h of entries) if (h.contextWindow) registerContextWindow(h.id, h.contextWindow);
           catalogue.unshift(...entries);
           added = entries.length;
         }
@@ -468,6 +473,38 @@ async function startAgentSession(
       }
     }
     return added;
+  };
+
+  /*
+   * A hosted model the catalogue does not have: soreqen.com could not be
+   * reached when this session started, and nothing ever asked again, so a
+   * one-minute outage cost the whole session its plan's models and every
+   * turn went to the own key's provider under a `soreqen/` name ("401 This
+   * API key has expired" from someone else). Before a turn the plan's models
+   * are loaded again, at most once a minute, and the model is left as chosen;
+   * if they still cannot be reached the turn says so instead of guessing.
+   */
+  let hostedRetryAt = 0;
+  const hostedModelReachable = async (): Promise<boolean> => {
+    if (!currentModel.startsWith(HOSTED_PREFIX) || findModel(catalogue, currentModel)) return true;
+    if (!account || Date.now() < hostedRetryAt) return false;
+    hostedRetryAt = Date.now() + 60_000;
+    try {
+      const [usage, models, flex] = await Promise.all([fetchUsage(account), fetchHostedModels(account), fetchFlexModels(account)]);
+      if (usage.hosted) {
+        const entries = hostedEntries(account, models, flex.models);
+        for (const h of entries) if (h.contextWindow) registerContextWindow(h.id, h.contextWindow);
+        for (let i = catalogue.length - 1; i >= 0; i--) if (catalogue[i]!.id.startsWith(HOSTED_PREFIX)) catalogue.splice(i, 1);
+        catalogue.unshift(...entries);
+      }
+    } catch (err) {
+      if (err instanceof SignedOutError) {
+        clearAccount();
+        account = null;
+        console.log(`  ${c.warn(glyph.warn)} ${c.text(err.message)}`);
+      }
+    }
+    return Boolean(findModel(catalogue, currentModel));
   };
 
   // Learn each model's real context window from its provider, in the background.
@@ -760,6 +797,17 @@ async function startAgentSession(
   const executeTurn = async (typedPrompt: string): Promise<GoalTurnOutcome> => {
     let outcome: GoalTurnOutcome = { stopReason: "failed", finalResponse: "", modifiedFiles: 0, toolCalls: 0 };
     console.log("");
+    if (!(await hostedModelReachable())) {
+      console.log(
+        `  ${c.danger(glyph.fail)} ${c.text(
+          account
+            ? `${currentModel} is one of your plan's models, and ${soreqenUrl()} cannot be reached right now. Send again in a minute, or pick one of your own keys with /model.`
+            : `${currentModel} is one of SoreQen's plan models. /login to use it, or pick one of your own keys with /model.`,
+        )}
+`,
+      );
+      return outcome;
+    }
     // `@file` mentions and dropped images become attachments, as the app's paperclip does.
     const { message: userPrompt, attached, skipped } = await attachToPrompt(typedPrompt, {
       workspace: config.workspacePath,
@@ -1654,8 +1702,10 @@ async function startAgentSession(
     // ---- context -----------------------------------------------------------
 
     if (input === "/context") {
-      const { model } = turnModel();
-      const windowTokens = lastContext?.windowTokens ?? contextWindowFor(model);
+      // The endpoint's listed window first: hosted models register theirs under
+      // `soreqen/<id>`, and a lookup by the upstream name alone fell back to 32k.
+      const { model, contextWindow } = turnModel();
+      const windowTokens = lastContext?.windowTokens ?? contextWindow ?? contextWindowFor(model);
       const messages = estimateHistoryTokens(conversation);
       const usage: ContextUsage = lastContext ?? {
         usedTokens: messages,
@@ -1719,8 +1769,8 @@ async function startAgentSession(
         return;
       }
 
-      const { model, llmProvider: endpointProvider } = turnModel();
-      const budget = Math.max(4_000, contextWindowFor(model) - 16_000);
+      const { model, llmProvider: endpointProvider, contextWindow } = turnModel();
+      const budget = Math.max(4_000, (contextWindow ?? contextWindowFor(model)) - 16_000);
       const controller = new AbortController();
       inFlight = controller;
       live.start();
@@ -1728,8 +1778,10 @@ async function startAgentSession(
       try {
         // A checkpoint into task memory, as inside a turn; the summary only if that fails.
         const engine = await ContextEngine.open({ runner: sandboxRunner, workspaceId, sessionId, withoutIndex: true });
+        // Ctrl-C ends the checkpoint now, not when the model call notices
+        // (as inside a turn, `untilCancelled`).
         const condensed =
-          (await engine
+          (await untilCancelled(engine
             .checkpoint({
               history: conversation,
               provider: endpointProvider ?? llmProvider,
@@ -1737,15 +1789,15 @@ async function startAgentSession(
               keepRecentTokens: Math.floor(budget * 0.15),
               signal: controller.signal,
             })
-            .then((r) => (r ? { ...r, summary: r.message, checkpointed: true } : null))) ??
-          (await summarizeHistory({
+            .then((r) => (r ? { ...r, summary: r.message, checkpointed: true } : null)), controller.signal)) ??
+          (await untilCancelled(summarizeHistory({
             history: conversation,
             provider: endpointProvider ?? llmProvider,
             model,
             keepRecentTokens: Math.floor(budget * 0.15),
             maxTranscriptTokens: Math.floor(budget * 0.6),
             signal: controller.signal,
-          }));
+          }), controller.signal));
         live.stop();
         if (!condensed) {
           console.log(`  ${c.faint("there is not enough conversation to checkpoint yet")}\n`);

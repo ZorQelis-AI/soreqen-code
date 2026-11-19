@@ -173,12 +173,17 @@ export async function runUpdate(log: (line: string) => void = console.log): Prom
     return 0;
   }
   log(`Installing ${latest} with: ${how.command} ${how.args.join(" ")}`);
+  // Windows will not replace files an open session is using (node-pty's
+  // terminal module), and the install then fails partway.
+  if (process.platform === "win32") log("Close any other SoreQen Code sessions first; Windows cannot replace files they are using.");
   // Windows runs npm, pnpm and yarn through .cmd shims, which only a shell starts.
   const result = spawnSync(`${how.command} ${how.args.join(" ")}`, [], { stdio: "inherit", shell: true });
   if (result.status !== 0) {
-    log(`The install did not finish (exit ${result.status ?? "unknown"}). You can run it yourself: ${how.command} ${how.args.join(" ")}`);
+    log(`The install did not finish (exit ${result.status ?? "unknown"}). Close every SoreQen Code session, then run it yourself: ${how.command} ${how.args.join(" ")}`);
     return result.status ?? 1;
   }
-  log(`Updated to SoreQen Code ${latest}.`);
+  // Only new sessions load the new files; an open one is not restarted under
+  // the person (that would end its turn), so say what it takes.
+  log(`Updated to SoreQen Code ${latest}. Sessions already open keep running ${info.version} until you restart them.`);
   return 0;
 }

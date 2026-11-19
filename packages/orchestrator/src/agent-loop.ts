@@ -1307,6 +1307,8 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
           for (const file of subResult.modifiedFiles) {
             if (!modifiedFiles.includes(file)) modifiedFiles.push(file);
           }
+          // Its tests and browser checks are this turn's too; see `TurnLedger.absorb`.
+          ledger.absorb(role, subResult.ledger);
 
           return { finalResponse: subResult.finalResponse, filesModified: subResult.modifiedFiles };
         },
@@ -1813,7 +1815,7 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
        * extraction could not be made. Either way the older messages are not
        * simply lost — see `context/state-checkpoint.ts`.
        */
-      const checkpointed = await engine.checkpoint({
+      const checkpointed = await untilCancelled(engine.checkpoint({
         history,
         provider: llmProvider,
         ...(options.model ? { model: options.model } : {}),
@@ -1822,17 +1824,17 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
         // and never more than the window's tier allows (15k, or 25k on larger windows).
         restoreTokens: Math.min(budget.restoreTokens, Math.floor(Math.max(0, checkpointTrigger - target) * 0.3)),
         signal,
-      });
+      }), signal);
       const condensed = checkpointed
         ? { ...checkpointed, summary: checkpointed.message, method: "checkpoint" as const }
-        : await summarizeHistory({
+        : await untilCancelled(summarizeHistory({
             history,
             provider: llmProvider,
             model: options.model,
             keepRecentTokens: Math.floor(target),
             maxTranscriptTokens: Math.floor(historyBudget * 0.6),
             signal,
-          }).then((r) => (r ? { ...r, method: "summary" as const } : null));
+          }), signal).then((r) => (r ? { ...r, method: "summary" as const } : null));
       if (condensed) {
         history.splice(0, history.length, ...condensed.history);
         prepared = await engine.prepare({ history, budget, advance: false });
@@ -2625,6 +2627,8 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
         const cached = cache.get(toolCall);
         if (cached) {
           results.set(toolCall.id, cached);
+          // Answered from this turn's cache, but a call the model made and saw: it is in the record.
+          ledger.record(toolCall.name, toolCall.input, { success: cached.success });
           await emit({
             type: "tool_result",
             sessionId,
@@ -3483,8 +3487,8 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
     if (subagents.anyRunning() || subagents.hasUnread()) {
       if (!subagents.hasUnread()) {
         const message = whenUrgent(() => options.controls?.pendingMessages?.() ?? 0, signal);
-        await Promise.race([subagents.waitForAny(), message.promise]);
-        message.cancel();
+        // Stop ends this wait too: the specialists were handed the same signal and stop in their own time.
+        await untilCancelled(Promise.race([subagents.waitForAny(), message.promise]), signal).finally(() => message.cancel());
         throwIfCancelled(signal);
       }
       if (subagents.hasUnread() || (options.controls?.pendingMessages?.() ?? 0) > 0) {
@@ -3524,8 +3528,10 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
       const facts: LLMMessage = {
         role: "user",
         content:
-          "Before you finish: this is the record of what your tool calls actually did this turn. " +
-          "It is the whole record — anything absent from it did not happen.\n\n" +
+          "Before you finish: this is the record of what the tool calls of this turn actually did, " +
+          "your sub-agents' included. Every call made since the person's last message is in it — a claim " +
+          "about this turn's work that nothing in it supports did not happen. Work from earlier turns is not " +
+          "listed; do not retract it for being absent.\n\n" +
           `<turn-record>\n${ledger.render()}\n</turn-record>\n\n` +
           "Check the summary you just wrote against this record. If something the request asked for is " +
           "missing from the record, it is unfinished — go and do it now. Otherwise, if every claim in " +
@@ -3722,8 +3728,19 @@ export async function runAgentTurn(options: AgentTurnOptions): Promise<AgentTurn
   }
 
   await Promise.all(auditWrites);
-  // A read into task state still running beside the turn lands before the state is saved.
-  await engine.settle();
+  /*
+   * A read into task state still running beside the turn lands before the
+   * state is saved — except after Stop. That read is a model call; waiting
+   * for it kept the session busy for its length after the person pressed
+   * Stop, and a message sent then queued behind a turn that had ended
+   * (reported 18 Nov 2026). It was handed the same signal; what it read by
+   * now is saved, and the rest is read again next turn.
+   */
+  if (stopReasonForTurn === "cancelled") {
+    await Promise.race([engine.settle(), delay(1_500)]).catch(() => undefined);
+  } else {
+    await engine.settle();
+  }
   await engine.persist();
 
   return {

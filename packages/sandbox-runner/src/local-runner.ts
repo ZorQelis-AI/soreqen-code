@@ -595,6 +595,11 @@ export class LocalSandboxRunner implements SandboxRunner {
     return this.processes.list(workspaceId);
   }
 
+  /** Processes still running, in every workspace (a dev server, a watcher). */
+  runningProcessCount(): number {
+    return this.processes.runningCount();
+  }
+
   readProcessOutput(workspaceId: string, processId: string, maxChars?: number): string {
     return this.processes.output(workspaceId, processId, maxChars);
   }

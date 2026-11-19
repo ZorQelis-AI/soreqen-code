@@ -22,6 +22,16 @@
  * underneath it come from here, handed to it just before it writes, and shown
  * to the person whether or not the prose agrees with them.
  *
+ * ## Every call, not only the ones with a section
+ *
+ * The model is told the record is the whole record, so a call missing from it
+ * is a call it will retract. It was missing browser checks (`browser_batch`
+ * at three widths) and a specialist's `run_tests` (reported 18 Nov 2026: the
+ * final check said they "are not in the turn record ... should be treated as
+ * not having happened", though the browser panel showed every one). So
+ * browser calls have their own lines, every other tool is counted by name,
+ * and a sub-agent's record is folded into its parent's, marked as its.
+ *
  * ## Deleted files
  *
  * There is no delete tool, so a deletion is a `run_command` that removed
@@ -50,6 +60,14 @@ export interface LedgerSubagent {
   status: string;
 }
 
+export interface LedgerBrowserCall {
+  /** What it did, as a person would say it: "opened http://localhost:5173", "batch of 4: open, screenshot, …". */
+  detail: string;
+  ok: boolean;
+  /** Set when a sub-agent made the call. */
+  by?: string;
+}
+
 export interface TurnLedgerSnapshot {
   created: string[];
   modified: string[];
@@ -57,8 +75,36 @@ export interface TurnLedgerSnapshot {
   checks: LedgerCheck[];
   subagents: LedgerSubagent[];
   questions: string[];
+  browser: LedgerBrowserCall[];
+  /** Calls of every tool without a section of its own, by name. */
+  otherTools: Record<string, number>;
   toolCalls: number;
   failedCalls: number;
+}
+
+/** A URL or path short enough for one line. */
+function shortText(raw: unknown, max = 100): string {
+  const text = typeof raw === "string" ? raw.trim() : "";
+  return text.length > max ? `${text.slice(0, max)}…` : text;
+}
+
+/** One browser call, described from its input. */
+function browserDetail(tool: string, input: Record<string, unknown>): string {
+  if (tool === "browser_batch") {
+    const steps = Array.isArray(input["steps"]) ? (input["steps"] as Record<string, unknown>[]) : [];
+    const actions = steps.map((st) => String(st?.["action"] ?? "?"));
+    const url = steps.map((st) => st?.["url"]).find((u) => typeof u === "string");
+    const width = steps.map((st) => st?.["width"] ?? st?.["viewport"]).find((w) => w !== undefined);
+    return (
+      `batch of ${steps.length}: ${actions.slice(0, 8).join(", ")}${actions.length > 8 ? ", …" : ""}` +
+      (url ? ` (${shortText(url)})` : "") +
+      (width !== undefined ? ` at width ${typeof width === "object" ? JSON.stringify(width) : String(width)}` : "")
+    );
+  }
+  const verb = tool.replace(/^browser_/, "").replace(/_/g, " ");
+  const action = typeof input["action"] === "string" ? input["action"] : "";
+  const target = shortText(input["url"] ?? input["selector"] ?? input["text"] ?? "");
+  return [verb, action && action !== verb ? action : "", target].filter(Boolean).join(" ");
 }
 
 /** A path as it should appear in a summary: forward slashes, no `./`. */
@@ -77,6 +123,8 @@ export class TurnLedger {
   private readonly checks: LedgerCheck[] = [];
   private readonly subagents: LedgerSubagent[] = [];
   private readonly questions: string[] = [];
+  private readonly browser: LedgerBrowserCall[] = [];
+  private readonly otherTools = new Map<string, number>();
   private toolCalls = 0;
   private failedCalls = 0;
 
@@ -173,8 +221,36 @@ export class TurnLedger {
         break;
       }
       default:
+        if (tool.startsWith("browser_")) {
+          this.browser.push({ detail: browserDetail(tool, input), ok: result.success });
+        } else {
+          this.otherTools.set(tool, (this.otherTools.get(tool) ?? 0) + 1);
+        }
         break;
     }
+  }
+
+  /**
+   * A sub-agent's record, folded into this one.
+   *
+   * Its calls are this turn's calls: a specialist's tests and browser checks
+   * are what the parent's summary reports, so they must be in the record the
+   * summary is checked against. Commands, checks and browser calls say whose
+   * they were.
+   */
+  absorb(role: string, sub: TurnLedgerSnapshot | undefined): void {
+    if (!sub) return;
+    const by = role || "sub-agent";
+    for (const f of sub.created) if (!this.modified.has(f)) this.created.add(f);
+    for (const f of sub.modified) if (!this.created.has(f)) this.modified.add(f);
+    for (const c of sub.commands) this.commands.push({ ...c, description: `${c.description ?? c.command} (by ${by})` });
+    for (const c of sub.checks) this.checks.push({ ...c, kind: `${c.kind} (by ${by})` });
+    for (const b of sub.browser ?? []) this.browser.push({ ...b, by: b.by ?? by });
+    for (const [tool, n] of Object.entries(sub.otherTools ?? {})) this.otherTools.set(tool, (this.otherTools.get(tool) ?? 0) + n);
+    for (const q of sub.questions) this.questions.push(q);
+    for (const a of sub.subagents) this.subagents.push(a);
+    this.toolCalls += sub.toolCalls;
+    this.failedCalls += sub.failedCalls;
   }
 
   /** A check the loop ran itself — the typecheck, the affected tests, the
@@ -198,6 +274,8 @@ export class TurnLedger {
       checks: [...this.checks],
       subagents: [...this.subagents],
       questions: [...this.questions],
+      browser: [...this.browser],
+      otherTools: Object.fromEntries([...this.otherTools.entries()].sort(([a], [b]) => a.localeCompare(b))),
       toolCalls: this.toolCalls,
       failedCalls: this.failedCalls,
     };
@@ -250,6 +328,13 @@ export class TurnLedger {
       lines.push("Verification: nothing was run this turn.");
     }
 
+    if (s.browser.length > 0) {
+      const shown = s.browser.slice(-20);
+      lines.push("Browser:");
+      for (const b of shown) lines.push(`  - ${b.detail}${b.by ? ` (by ${b.by})` : ""} [${b.ok ? "ok" : "FAILED"}]`);
+      if (s.browser.length > shown.length) lines.push(`  - … and ${s.browser.length - shown.length} earlier browser calls`);
+    }
+
     if (s.subagents.length > 0) {
       lines.push("Delegated:");
       for (const a of s.subagents) lines.push(`  - ${a.role} (${a.status}): ${a.task}`);
@@ -258,6 +343,11 @@ export class TurnLedger {
     if (s.questions.length > 0) {
       lines.push("Asked the user:");
       for (const q of s.questions) lines.push(`  - ${q}`);
+    }
+
+    const others = Object.entries(s.otherTools);
+    if (others.length > 0) {
+      lines.push(`Other tool calls: ${others.map(([tool, n]) => (n > 1 ? `${tool} ×${n}` : tool)).join(", ")}`);
     }
 
     lines.push(

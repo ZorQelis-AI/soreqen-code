@@ -513,6 +513,13 @@ export class ProcessManager {
     return entry ? { ...entry.info } : null;
   }
 
+  /** Processes still running, in every workspace. */
+  runningCount(): number {
+    let n = 0;
+    for (const e of this.entries.values()) if (e.info.status === "running") n++;
+    return n;
+  }
+
   list(workspaceId: string): ProcessInfo[] {
     return [...this.entries.values()]
       .filter((e) => e.info.workspaceId === workspaceId)

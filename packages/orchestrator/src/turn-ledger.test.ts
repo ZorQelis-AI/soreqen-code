@@ -103,3 +103,57 @@ describe("reading the check of a closing summary", () => {
     });
   });
 });
+
+/*
+ * 18 Nov 2026: a turn that checked a page with browser_batch at three widths
+ * was told by its own final check that the browser checks and two run_tests
+ * calls "are not in the turn record ... should be treated as not having
+ * happened". Browser calls had no section, and a specialist's calls were not
+ * in its parent's record at all.
+ */
+describe("TurnLedger: every call is in the record", () => {
+  it("lists browser calls, with what they opened", () => {
+    const ledger = new TurnLedger();
+    ledger.record("edit_file", { path: "src/App.tsx" }, { success: true, data: { path: "src/App.tsx" } });
+    ledger.record(
+      "browser_batch",
+      { steps: [{ action: "open", url: "http://localhost:5173" }, { action: "resize", width: 390 }, { action: "screenshot" }] },
+      { success: true },
+    );
+    ledger.record("browser_open", { url: "http://localhost:5173/settings" }, { success: false });
+    const text = ledger.render();
+    expect(text).toContain("Browser:");
+    expect(text).toContain("batch of 3: open, resize, screenshot (http://localhost:5173)");
+    expect(text).toContain("open http://localhost:5173/settings [FAILED]");
+    expect(ledger.snapshot().browser).toHaveLength(2);
+  });
+
+  it("counts every other tool by name, so nothing called is absent", () => {
+    const ledger = new TurnLedger();
+    ledger.record("read_file", { path: "a.ts" }, { success: true });
+    ledger.record("read_file", { path: "b.ts" }, { success: true });
+    ledger.record("grep", { pattern: "x" }, { success: true });
+    expect(ledger.render()).toContain("Other tool calls: grep, read_file ×2");
+  });
+
+  it("folds a sub-agent's record into its parent's, marked as its", () => {
+    const sub = new TurnLedger();
+    sub.record("edit_file", { path: "src/b.ts" }, { success: true, data: { path: "src/b.ts" } });
+    sub.record("run_tests", {}, { success: true, data: { summary: "12 passed" } });
+    sub.record("browser_batch", { steps: [{ action: "open", url: "http://localhost:3000" }] }, { success: true });
+    sub.record("run_command", { command: "pnpm build", description: "Build" }, { success: true, data: { exitCode: 0 } });
+
+    const parent = new TurnLedger();
+    parent.record("spawn_subagent", { role: "tester", task_prompt: "check it" }, { success: true, data: { role: "tester" } });
+    parent.absorb("tester", sub.snapshot());
+
+    const snap = parent.snapshot();
+    expect(snap.modified).toEqual(["src/b.ts"]);
+    expect(parent.touchedFiles()).toBe(true);
+    const text = parent.render();
+    expect(text).toContain("tests (by tester): passed — 12 passed");
+    expect(text).toContain("Build (by tester) [ok]");
+    expect(text).toContain("batch of 1: open (http://localhost:3000) (by tester) [ok]");
+    expect(snap.toolCalls).toBe(5);
+  });
+});
